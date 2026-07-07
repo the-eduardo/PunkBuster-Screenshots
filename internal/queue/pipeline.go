@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"pbss/internal/discord"
@@ -36,6 +37,14 @@ type Pipeline struct {
 
 	ChannelID string
 	GuildID   string
+
+	// inFlight rastreia arquivos já baixados e enfileirados, mas ainda sem
+	// confirmação de envio. Evita que o poller (que volta a listar o diretório
+	// remoto imediatamente quando há backlog) baixe e enfileire o mesmo arquivo
+	// de novo antes do envio/exclusão remota anterior serem confirmados — o que
+	// causava "no such file or directory" quando o job duplicado tentava abrir
+	// um arquivo local já apagado pelo job original.
+	inFlight sync.Map
 }
 
 func (p *Pipeline) Run(ctx context.Context) error {
@@ -70,6 +79,9 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			if !f.IsScreenshot() {
 				continue
 			}
+			if _, alreadyQueued := p.inFlight.LoadOrStore(f.Name, struct{}{}); alreadyQueued {
+				continue // já baixado/enfileirado numa passada anterior, aguardando confirmação
+			}
 			pending++
 			p.processFile(f)
 		}
@@ -84,6 +96,16 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 func (p *Pipeline) processFile(f source.FileInfo) {
 	localPath := filepath.Join(p.TempDir, f.Name)
+
+	// Libera a entrada de inFlight se sairmos antes de enfileirar com sucesso
+	// (qualquer "return" abaixo). Se enfileirar, quem libera é onSendResult,
+	// só depois que o envio for confirmado (ou definitivamente falhar).
+	queued := false
+	defer func() {
+		if !queued {
+			p.inFlight.Delete(f.Name)
+		}
+	}()
 
 	remote, err := p.Src.Open(p.SFTPFolder, f.Name)
 	if err != nil {
@@ -135,9 +157,15 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 			p.onSendResult(dir, name, localPath, info, capturedAt, res)
 		},
 	})
+	queued = true
 }
 
 func (p *Pipeline) onSendResult(dir, name, localPath string, info parser.Info, capturedAt time.Time, res discord.SendResult) {
+	// Libera o arquivo pro poller considerar de novo: se falhou definitivamente
+	// e o remoto ainda existe (não apagado), o próximo ciclo de poll o pega
+	// normalmente, agora sem risco de duplicar (o download anterior já concluiu).
+	defer p.inFlight.Delete(name)
+
 	if res.Err != nil {
 		slog.Error("envio ao discord falhou definitivamente, arquivo mantido pra nova tentativa",
 			"arquivo", name, "erro", res.Err)
