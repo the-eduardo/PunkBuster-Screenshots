@@ -13,3 +13,12 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# Credenciais e configuração local — nunca commitar
+.env
+.env.*
+!.env.example
+
+# Volume local de dados (sqlite + fila temporária de screenshots)
+/data/
+

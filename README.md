@@ -1,56 +1,78 @@
-# PunkBuster-Screenshots-to-Discord
-Simple tool that sends punkbuster screenshots to a Discord channel using a Discord Bot app.
+# PunkBuster-Screenshots-to-Discord (duck-pbss)
 
-## Features
+Bot em Go que monitora um servidor FTP/sFTP de PunkBuster (ex.: BF4), envia cada
+screenshot capturado para um canal do Discord com o nome do jogador e o PBGUID,
+e mantém um índice pesquisável (SQLite) consultável direto no Discord via slash
+commands (`/pbss search`, `/pbss last`, `/pbss stats`).
 
-- Connects to an FTP or SFTP server based on configuration.
-- Downloads screenshots and sends them to a Discord channel with Player Name and PB GUID.
+O Discord é o armazenamento permanente das imagens (comprovado em anos de uso).
+O disco local é só uma fila de trânsito temporária entre o download e a
+confirmação de envio — nada fica retido localmente por mais de `RETENTION_HOURS`.
 
-## Prerequisites
+## Arquitetura
 
-Before running the program, make sure you have:
+```
+cmd/bot/main.go            bootstrap: config, sqlite, sessão discord, pipeline
+internal/config            leitura/validação de variáveis de ambiente
+internal/source            abstração FTP/sFTP com reconexão automática
+internal/parser            extração robusta do GUID+nome do cabeçalho do screenshot
+internal/storage           índice SQLite (players, player_names, screenshots)
+internal/queue             pipeline: baixar -> enfileirar -> confirmar -> limpar
+internal/discord           sessão persistente + fila de envio com retry
+internal/discord/commands  slash commands (/pbss search|last|stats)
+```
 
-- Go installed (version 1.20+) (optional)
-- Docker and Docker Compose installed
-- A Discord Bot Token
+Ciclo de vida de cada screenshot: baixa pro disco local → extrai GUID/nome →
+enfileira envio ao Discord → **só após confirmação** grava no índice e apaga o
+arquivo local e o remoto. Se o envio falhar, nada é apagado (retry no próximo
+ciclo). Um "janitor" força a limpeza de arquivos locais mais antigos que
+`RETENTION_HOURS`, mesmo sem confirmação, evitando acúmulo de disco.
 
-## Usage
+## Pré-requisitos
 
-1. Clone this repository:
+- Docker e Docker Compose
+- Um Bot do Discord (token no [Developer Portal](https://discord.com/developers/applications))
+
+## Uso
+
+1. Clone este repositório e copie o arquivo de exemplo de configuração:
 
 ```bash
-git clone https://github.com/pruu-networking/PunkBuster-Screenshots-to-Discord
-cd PunkBuster-Screenshots-to-Discord
+git clone https://github.com/pruu-networking/PunkBuster-Screenshots-to-Discord duck-pbss
+cd duck-pbss
+cp .env.example .env
 ```
 
-2. Configure the docker-compose.yml file:
+2. Edite o `.env` (nunca é commitado) com os dados reais do servidor e do bot —
+   veja os comentários em [.env.example](.env.example).
 
-```dotenv
-SERVER=<FTP_or_SFTP_server>
-USER=<Username>
-PASS=<Password>
-SFTP_FOLDER=<Server_folder_path>
-BOT_TOKEN=<Discord_bot_token>
-CHANNEL_ID=<Discord_channel_id>
-SELECT_FTP_MODE=<sftp_or_ftp>
-WAITING_TIME=<Waiting_time_in_minutes>
-# DEBUG_MODE=true # Uncomment this line to enable debug mode, use it only for testing purposes
-```
-
-3. Then run it with docker-compose:
+3. Suba com docker-compose:
 
 ```bash
-sudo docker-compose up --build -d
+sudo docker compose up --build -d
 ```
-## Update to a new version
-Go to the directory where you cloned the repository and run the following commands:
+
+## Atualizando para uma nova versão
+
 ```bash
 git pull
-sudo docker-compose down -v --rmi all
-sudo docker-compose up -d --build 
+sudo docker compose up -d --build
 ```
-And that's it, the new version is running.
-## TODO List
-- Improve the Config system to something more beautiful.
-- Improve the logging system with a log tool/package.
-- Improve the code to make it clean and efficient (maybe someday).
+
+O SQLite e a fila temporária ficam no volume `./data`, então nada se perde
+entre atualizações.
+
+## Slash commands
+
+- `/pbss search termo:<nome ou GUID>` — busca paginada (botões ◀ ▶), com link
+  direto pra mensagem original no Discord.
+- `/pbss last termo:<nome ou GUID> quantidade:<N>` — atalho pros N mais recentes.
+- `/pbss stats` — total de screenshots, jogadores distintos flagrados e top 10.
+
+Por padrão os comandos são registrados globalmente (demora até ~1h pra
+propagar). Defina `DISCORD_GUILD_ID` no `.env` para propagar instantaneamente
+num servidor específico (útil em testes).
+
+## Variáveis de ambiente
+
+Ver [.env.example](.env.example) para a lista completa e os valores padrão.
