@@ -1,9 +1,9 @@
 module pbss
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/bwmarrin/discordgo v0.28.1
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/pkg/sftp v1.13.7
 	golang.org/x/crypto v0.31.0
