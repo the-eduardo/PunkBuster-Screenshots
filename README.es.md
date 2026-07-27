@@ -1,10 +1,10 @@
-# 🦆 duck-pbss — PunkBuster Screenshots to Discord
+# PunkBuster Screenshots to Discord
 
 **Monitorea un servidor FTP/sFTP de PunkBuster (BF4) en busca de capturas de detección de tramposos y entrega cada una directo a Discord — indexada y buscable por nombre o GUID del jugador.**
 
-![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-required-2496ED?logo=docker&logoColor=white)
-![discordgo](https://img.shields.io/badge/discordgo-v0.28-5865F2?logo=discord&logoColor=white)
+![discordgo](https://img.shields.io/badge/discordgo-v0.29-5865F2?logo=discord&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-modernc%2Fsqlite-003B57?logo=sqlite&logoColor=white)
 
 [English](README.md) · [Português 🇧🇷](README.pt-BR.md) · **Español 🌎**
@@ -13,7 +13,7 @@
 
 ## 🚀 Resumen
 
-El anticheat de PunkBuster genera una captura de pantalla (`pbNNNNNN.png`) cada vez que marca a un jugador sospechoso, y la deja en la carpeta FTP/sFTP del servidor de juego. **duck-pbss** monitorea esa carpeta, descarga cada captura, la publica en un canal de Discord con el **nombre del jugador + PBGUID** y — solo después de confirmar el envío del mensaje — hace la limpieza. Un índice SQLite local guarda cada GUID/nombre/mensaje, así que puedes buscar todo el historial directo desde Discord con `/pbss search`.
+El anticheat de PunkBuster genera una captura de pantalla (`pbNNNNNN.png`) cada vez que marca a un jugador sospechoso, y la deja en la carpeta FTP/sFTP del servidor de juego. **PunkBuster Screenshots** monitorea esa carpeta, descarga cada captura, la publica en un canal de Discord con el **nombre del jugador + PBGUID** y — solo después de confirmar el envío del mensaje — hace la limpieza. Un índice SQLite local guarda cada GUID/nombre/mensaje, así que puedes buscar todo el historial directo desde Discord con `/pbss search`.
 
 ```text
 File: pb007647.png | Created at: 2026-06-09 18:50:49
@@ -67,7 +67,7 @@ PBGUID: 5416a6f4ea15c7a4782f4bf64dab0182 JoseToalha
 ```mermaid
 flowchart LR
     PB["🎮 Servidor BF4<br/>PunkBuster (pbsvss)"] -->|"escribe pbNNNNNN.png"| SFTP[("📁 SFTP / FTP")]
-    SFTP -->|"poll · descarga"| BOT["🦆 duck-pbss"]
+    SFTP -->|"poll · descarga"| BOT["🤖 PunkBuster Screenshots"]
     BOT -->|"sube + mensaje"| DISCORD["Discord API"]
     DISCORD <-->|"/pbss search|last|stats"| U["🧑‍💻 Moderador<br/>(app de Discord)"]
     BOT -->|"guid · nombre · message_id"| DB[("🗄️ Índice SQLite")]
@@ -185,8 +185,8 @@ el servidor de juego, y un token de bot de Discord.
 **2. Clona y configura**
 
 ```bash
-git clone https://github.com/the-eduardo/PunkBuster-Screenshots duck-pbss
-cd duck-pbss
+git clone https://github.com/the-eduardo/PunkBuster-Screenshots
+cd PunkBuster-Screenshots
 cp .env.example .env
 nano .env   # completa SERVER, USER, PASS, SFTP_FOLDER, BOT_TOKEN, CHANNEL_ID
 ```
@@ -219,6 +219,8 @@ Toda la configuración es vía variables de entorno (ver [`.env.example`](.env.e
 | `BOT_TOKEN` | ✅ | — | Token del bot de Discord. |
 | `CHANNEL_ID` | ✅ | — | Canal de Discord donde se publican las capturas. |
 | `SELECT_FTP_MODE` | ➖ | `ftp` | `ftp` o `sftp`. |
+| `SFTP_HOST_KEY` | ✅ *(solo en sftp)* | — | Clave pública esperada del servidor sFTP, para que el bot distinga el servidor real de un impostor. Obtenla con `ssh-keyscan -p <puerto> -t ed25519 <host>` y **verifica la huella antes de confiar en ella**. Acepta tanto `ssh-ed25519 AAAA...` como la línea completa de `ssh-keyscan`, con el prefijo `[host]:puerto`. |
+| `SFTP_INSECURE_HOST_KEY` | ➖ | `false` | Ponlo en `true` para omitir la verificación de la clave del host. No recomendado — el bot registra una advertencia al arrancar y la contraseña del sFTP queda expuesta a quien logre suplantar al servidor. |
 | `WAITING_TIME` | ➖ | `30` | Minutos de espera cuando no hay capturas nuevas (2–120). |
 | `SERVER_NAME` | ➖ | *(= `SERVER`)* | Etiqueta guardada en la columna `server` del índice — útil si corres más de una instancia. |
 | `DISCORD_GUILD_ID` | ➖ | *(global)* | Registra `/pbss` al instante en ese servidor, en vez de esperar hasta ~1h por la propagación global. |
@@ -231,6 +233,7 @@ Toda la configuración es vía variables de entorno (ver [`.env.example`](.env.e
 
 ## 🔒 Seguridad y Retención de Datos
 
+- **El servidor sFTP se verifica, no se acepta a ciegas.** La autenticación es por contraseña, así que una máquina que suplante al servidor del juego capturaría la credencial completa. El bot compara la clave pública del servidor con `SFTP_HOST_KEY` y **falla cerrado**: sin la clave configurada se niega a arrancar, salvo que lo desactives explícitamente con `SFTP_INSECURE_HOST_KEY=true`. Si la clave deja de coincidir, el error muestra la huella esperada y la recibida — así una rotación legítima de la clave del servidor se distingue fácilmente de un ataque.
 - **Las credenciales nunca llegan a git.** El `.env` está en `.gitignore`; solo se sube `.env.example` (sin valores reales). Rota `BOT_TOKEN`/`PASS` de inmediato si se filtran.
 - **Discord es el archivo, no el disco.** El `TEMP_DIR` local solo guarda una captura entre la descarga y la entrega confirmada — por diseño, nunca un almacenamiento a largo plazo.
 - **Garantía de entrega confirmada.** Las copias local *y* remota solo se borran **después** de que Discord confirma la creación del mensaje. Un envío fallido mantiene ambas copias y reintenta automáticamente.
