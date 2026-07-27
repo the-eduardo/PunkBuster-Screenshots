@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"pbss/internal/config"
 	"pbss/internal/discord"
@@ -95,6 +96,19 @@ func main() {
 
 	// Dead-man switch do Kuma: heartbeat so com o gateway conectado.
 	discord.StartKumaHeartbeat(ctx, session)
+
+	go func() {
+		t := time.NewTicker(15 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				handler.PurgeExpiredStates(15 * time.Minute)
+			}
+		}
+	}()
 
 	slog.Info("duck-pbss iniciado", "servidor", cfg.ServerName, "modo", cfg.SelectFTPMode, "canal", cfg.ChannelID)
 	if err := pipeline.Run(ctx); err != nil && ctx.Err() == nil {
