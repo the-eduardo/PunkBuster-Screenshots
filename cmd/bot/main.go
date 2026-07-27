@@ -85,6 +85,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Dead-man switch do Kuma: heartbeat so com o gateway conectado.
+	discord.StartKumaHeartbeat(ctx, session)
+
 	slog.Info("duck-pbss iniciado", "servidor", cfg.ServerName, "modo", cfg.SelectFTPMode, "canal", cfg.ChannelID)
 	if err := pipeline.Run(ctx); err != nil && ctx.Err() == nil {
 		slog.Error("pipeline encerrado com erro", "erro", err)

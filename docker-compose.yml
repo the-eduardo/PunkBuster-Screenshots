@@ -10,6 +10,10 @@ services:
       - DB_PATH=/data/pbss.db
       - TEMP_DIR=/data/tmp
       - RETENTION_HOURS=24 # limpeza forçada de arquivos locais não confirmados após 24h
+      # Dead-man switch: push a cada 5min so com o gateway conectado
+      # (internal/discord/kuma.go). O uptime-kuma foi ligado a esta rede em
+      # 19/07 -- pelo host nao daria, o Kuma escuta so em 127.0.0.1.
+      - KUMA_PUSH_URL=http://uptime-kuma:3001/api/push/H0hwtnjZ6s
     volumes:
       - ./data:/data # sqlite + fila temporária de screenshots (persistente entre restarts)
 
