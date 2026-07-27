@@ -60,7 +60,15 @@ func main() {
 
 	var src source.Source
 	if cfg.SelectFTPMode == "sftp" {
-		src = source.NewSFTPSource(cfg.Server, cfg.User, cfg.Password)
+		sftpSrc, err := source.NewSFTPSource(cfg.Server, cfg.User, cfg.Password, cfg.SFTPHostKey, cfg.SFTPInsecureHostKey)
+		if err != nil {
+			slog.Error("falha ao configurar a origem sFTP", "erro", err)
+			os.Exit(1)
+		}
+		if cfg.SFTPInsecureHostKey && cfg.SFTPHostKey == "" {
+			slog.Warn("verificacao da chave do host sFTP DESLIGADA por SFTP_INSECURE_HOST_KEY - a senha trafega para qualquer servidor que atenda no endereco")
+		}
+		src = sftpSrc
 	} else {
 		src = source.NewFTPSource(cfg.Server, cfg.User, cfg.Password)
 	}

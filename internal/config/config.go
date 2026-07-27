@@ -19,6 +19,11 @@ type Config struct {
 	WaitingTime   time.Duration
 	SelectFTPMode string // "ftp" ou "sftp"
 
+	// Chave publica esperada do servidor sFTP, no formato do ssh-keyscan.
+	// Vazia so' e' aceita junto com SFTPInsecureHostKey.
+	SFTPHostKey         string
+	SFTPInsecureHostKey bool
+
 	ServerName string // rótulo do servidor de origem, usado na coluna "server" do banco
 
 	DBPath         string
@@ -60,6 +65,18 @@ func Load() (*Config, error) {
 	cfg.SelectFTPMode = strings.ToLower(get("SELECT_FTP_MODE"))
 	if cfg.SelectFTPMode != "sftp" && cfg.SelectFTPMode != "ftp" {
 		cfg.SelectFTPMode = "ftp"
+	}
+
+	// Verificacao da identidade do servidor sFTP. Falha fechado: sem a chave, o
+	// bot nao sobe, a menos que ignorar seja pedido explicitamente. So' vale no
+	// modo sftp — o FTP simples nao tem host key.
+	cfg.SFTPHostKey = get("SFTP_HOST_KEY")
+	cfg.SFTPInsecureHostKey, _ = strconv.ParseBool(get("SFTP_INSECURE_HOST_KEY"))
+	if cfg.SelectFTPMode == "sftp" && cfg.SFTPHostKey == "" && !cfg.SFTPInsecureHostKey {
+		return nil, fmt.Errorf(
+			"SELECT_FTP_MODE=sftp exige SFTP_HOST_KEY (chave publica do servidor). " +
+				"Obtenha com `ssh-keyscan -p <porta> -t ed25519 <host>` e confira a fingerprint " +
+				"antes de confiar. Para rodar sem verificacao, defina SFTP_INSECURE_HOST_KEY=true")
 	}
 
 	waitingMinutes, err := strconv.Atoi(get("WAITING_TIME"))

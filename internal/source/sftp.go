@@ -1,8 +1,12 @@
 package source
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,16 +24,85 @@ type SFTPSource struct {
 	client *sftp.Client
 }
 
-func NewSFTPSource(addr, user, password string) *SFTPSource {
+// NewSFTPSource monta a origem sFTP. hostKey e' a chave publica esperada do
+// servidor; sem ela (e sem insecureHostKey explicito) a construcao falha, para
+// que a ausencia de verificacao seja sempre uma escolha declarada e nunca o
+// comportamento padrao.
+func NewSFTPSource(addr, user, password, hostKey string, insecureHostKey bool) (*SFTPSource, error) {
+	callback, err := hostKeyCallback(hostKey, insecureHostKey)
+	if err != nil {
+		return nil, err
+	}
 	return &SFTPSource{
 		addr: addr,
 		config: &ssh.ClientConfig{
 			User:            user,
 			Auth:            []ssh.AuthMethod{ssh.Password(password)},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			HostKeyCallback: callback,
 			Timeout:         15 * time.Second,
 		},
+	}, nil
+}
+
+// hostKeyCallback decide como a identidade do servidor e' verificada.
+func hostKeyCallback(hostKey string, insecure bool) (ssh.HostKeyCallback, error) {
+	if strings.TrimSpace(hostKey) == "" {
+		if insecure {
+			// Escolha explicita do operador: aceita qualquer chave. A senha do
+			// sFTP fica exposta a quem conseguir se passar pelo servidor.
+			return ssh.InsecureIgnoreHostKey(), nil
+		}
+		return nil, errors.New(
+			"SFTP_HOST_KEY nao definida: sem ela a conexao aceitaria qualquer servidor e a senha " +
+				"ficaria exposta a um ataque man-in-the-middle. Pegue a chave com " +
+				"`ssh-keyscan -p <porta> -t ed25519 <host>` e coloque no .env; " +
+				"para ignorar a verificacao conscientemente, defina SFTP_INSECURE_HOST_KEY=true")
 	}
+
+	expected, err := parseHostKey(hostKey)
+	if err != nil {
+		return nil, err
+	}
+	expectedRaw := expected.Marshal()
+
+	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
+		if bytes.Equal(key.Marshal(), expectedRaw) {
+			return nil
+		}
+		// Mensagem verbosa de proposito: se a chave do servidor for trocada de
+		// forma legitima, o log ja entrega a nova fingerprint pra conferencia.
+		return fmt.Errorf(
+			"chave do host %s nao confere - conexao abortada; esperada %s, recebida %s "+
+				"(troca legitima de chave do servidor ou man-in-the-middle)",
+			hostname, ssh.FingerprintSHA256(expected), ssh.FingerprintSHA256(key))
+	}, nil
+}
+
+// parseHostKey aceita tanto "ssh-ed25519 AAAA..." quanto a linha inteira que o
+// ssh-keyscan imprime ("[host]:porta ssh-ed25519 AAAA..."), que e' o formato
+// que se copia e cola na pratica.
+func parseHostKey(line string) (ssh.PublicKey, error) {
+	fields := strings.Fields(line)
+	if len(fields) >= 2 && !isKeyType(fields[0]) {
+		fields = fields[1:]
+	}
+	if len(fields) < 2 {
+		return nil, fmt.Errorf("SFTP_HOST_KEY malformada: esperado algo como \"ssh-ed25519 AAAA...\", recebido %q", line)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.Join(fields, " ")))
+	if err != nil {
+		return nil, fmt.Errorf("SFTP_HOST_KEY invalida: %w", err)
+	}
+	return pub, nil
+}
+
+func isKeyType(field string) bool {
+	for _, prefix := range []string{"ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-", "rsa-sha2-"} {
+		if strings.HasPrefix(field, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SFTPSource) EnsureConnected() error {
