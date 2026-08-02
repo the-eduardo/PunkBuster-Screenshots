@@ -13,7 +13,10 @@ services:
       # Dead-man switch: push a cada 5min so com o gateway conectado
       # (internal/discord/kuma.go). O uptime-kuma foi ligado a esta rede em
       # 19/07 -- pelo host nao daria, o Kuma escuta so em 127.0.0.1.
-      - KUMA_PUSH_URL=http://uptime-kuma:3001/api/push/H0hwtnjZ6s
+      # KUMA_PUSH_URL saiu daqui em 01/08/2026: este arquivo e rastreado em
+      # git e o token de push e segredo. Agora vem do .env (nao versionado).
+      # O token exposto no historico foi rotacionado no Kuma na mesma operacao,
+      # entao o que ficou no historico nao vale mais nada.
     volumes:
       - ./data:/data # sqlite + fila temporária de screenshots (persistente entre restarts)
 

@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// openRetryDelays define o backoff da abertura da sessao. Teto de ~46s: mais que
+// isso e melhor deixar o restart:always do compose assumir.
+var openRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 16 * time.Second}
 
 // ErrInvalidToken é retornado por Open quando o Discord recusa o token (close code 4004).
 // Diferente de um erro transitório de rede, tentar de novo não resolve — é preciso
@@ -24,11 +29,27 @@ func Open(token string) (*discordgo.Session, error) {
 	}
 	session.Identify.Intents = discordgo.IntentsGuilds
 
-	if err := session.Open(); err != nil {
-		if strings.Contains(err.Error(), "4004") {
+	// Retry com backoff: falha de rede na abertura e transitoria (1 crash real
+	// por TLS timeout em 28/07/2026) e nao merece derrubar o processo. Token
+	// recusado (4004) aborta na hora — insistir nao muda o resultado.
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		lastErr = session.Open()
+		if lastErr == nil {
+			break
+		}
+		if strings.Contains(lastErr.Error(), "4004") {
 			return nil, ErrInvalidToken
 		}
-		return nil, fmt.Errorf("falha ao abrir conexão com o discord: %w", err)
+		if attempt >= len(openRetryDelays) {
+			return nil, fmt.Errorf("falha ao abrir conexão com o discord após %d tentativas: %w", attempt+1, lastErr)
+		}
+		slog.Warn("falha ao abrir conexão com o discord, tentando de novo",
+			"tentativa", attempt+1,
+			"de", len(openRetryDelays)+1,
+			"espera", openRetryDelays[attempt],
+			"erro", lastErr)
+		time.Sleep(openRetryDelays[attempt])
 	}
 
 	session.AddHandler(func(_ *discordgo.Session, event *discordgo.Disconnect) {
