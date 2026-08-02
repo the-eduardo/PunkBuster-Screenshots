@@ -36,7 +36,6 @@ type Pipeline struct {
 	Sender *discord.Sender
 
 	ChannelID string
-	GuildID   string
 
 	// inFlight rastreia arquivos já baixados e enfileirados, mas ainda sem
 	// confirmação de envio. Evita que o poller (que volta a listar o diretório
