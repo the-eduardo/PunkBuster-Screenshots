@@ -19,10 +19,11 @@ var guidPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 const pageSize = 5
 
 type searchState struct {
-	query   string
-	isGUID  bool
-	results []storage.ScreenshotRecord
-	page    int
+	query     string
+	isGUID    bool
+	results   []storage.ScreenshotRecord
+	page      int
+	createdAt time.Time
 }
 
 // Handler registra e atende os slash commands "/pbss".
@@ -116,7 +117,7 @@ func (h *Handler) runSearch(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	state := &searchState{query: termo, results: results, page: 0}
+	state := &searchState{query: termo, results: results, page: 0, createdAt: time.Now()}
 	embed, components := renderPage(state)
 
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -285,13 +286,13 @@ func (h *Handler) respondError(s *discordgo.Session, i *discordgo.InteractionCre
 	h.respondEphemeral(s, i, fmt.Sprintf("Erro ao consultar o índice: %v", err), nil, nil)
 }
 
-// PurgeExpiredStates libera memória de buscas antigas; deve rodar periodicamente.
+// PurgeExpiredStates libera memória de buscas com mais de maxAge; deve rodar periodicamente.
 func (h *Handler) PurgeExpiredStates(maxAge time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Estados não têm timestamp individual pois o volume é baixo (poucas buscas
-	// simultâneas); um reset periódico total é suficiente pra evitar vazamento de memória.
-	if len(h.states) > 500 {
-		h.states = make(map[string]*searchState)
+	for id, state := range h.states {
+		if time.Since(state.createdAt) > maxAge {
+			delete(h.states, id)
+		}
 	}
 }
