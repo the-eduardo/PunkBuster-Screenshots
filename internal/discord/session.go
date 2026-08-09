@@ -5,6 +5,7 @@ package discord
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -27,6 +28,13 @@ func Open(token string) (*discordgo.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("falha ao criar sessão do discord: %w", err)
 	}
+	// Sem isso o http.Client default do Go nunca expira: o Sender processa
+	// envios em serie numa unica goroutine, e uma chamada REST presa numa
+	// conexao TCP morta (outage tipo "no healthy upstream", 07/08 22:26 UTC)
+	// trava o Sender pra sempre, enche o canal jobs e bloqueia todo o
+	// polling. 30s segue o padrao dos outros clientes do projeto (sftp.go e
+	// ftp.go usam 15s, kuma.go usa 10s) com folga extra pro upload de imagem.
+	session.Client = &http.Client{Timeout: 30 * time.Second}
 	session.Identify.Intents = discordgo.IntentsGuilds
 
 	// Retry com backoff: falha de rede na abertura e transitoria (1 crash real
