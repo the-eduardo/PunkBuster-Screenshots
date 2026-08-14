@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -110,9 +111,20 @@ func (s *SFTPSource) EnsureConnected() error {
 	defer s.mu.Unlock()
 
 	if s.client != nil {
-		// Uma chamada leve pra confirmar que a conexão ainda está viva.
-		if _, err := s.client.Getwd(); err == nil {
-			return nil
+		// Probe com prazo: em TCP meio-aberto o Getwd() nunca retorna, e como
+		// ele roda sob s.mu isso travaria o source inteiro, Close() incluso.
+		// O canal tem buffer 1 para o send nunca ficar preso mesmo após o timeout.
+		done := make(chan error, 1)
+		go func() { _, err := s.client.Getwd(); done <- err }()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				return nil
+			}
+		case <-time.After(10 * time.Second):
+			slog.Warn("probe do sFTP não respondeu em 10s, descartando conexão e reconectando",
+				"addr", s.addr)
 		}
 		s.closeLocked()
 	}
