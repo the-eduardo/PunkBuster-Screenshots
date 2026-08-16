@@ -146,3 +146,33 @@ func TestOnSendResultLimpaMesmoComIndiceFalhando(t *testing.T) {
 		t.Errorf("remoto deveria ter sido apagado mesmo com o indice falhando, Delete=%v", src.deleted)
 	}
 }
+
+// TestPollAliveSemPollNenhum cobre o estado inicial antes do primeiro List():
+// lastPoll ainda em zero não pode ser lido como "vivo agora mesmo".
+func TestPollAliveSemPollNenhum(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	if p.PollAlive() {
+		t.Errorf("PollAlive deveria ser false antes de qualquer List() bem-sucedido")
+	}
+}
+
+// TestPollAlivePollRecente é o caminho feliz: List() acabou de acontecer.
+func TestPollAlivePollRecente(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	p.lastPoll.Store(time.Now().Unix())
+	if !p.PollAlive() {
+		t.Errorf("PollAlive deveria ser true logo apos um Store recente")
+	}
+}
+
+// TestPollAlivePollExpirado prova o limite: 3*WaitingTime+5min estourado tem
+// que virar false. É o caso que a prova por mutação (trocar < por >) derruba.
+func TestPollAlivePollExpirado(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	prazo := 3*p.WaitingTime + 5*time.Minute
+	expirado := time.Now().Add(-prazo - time.Second)
+	p.lastPoll.Store(expirado.Unix())
+	if p.PollAlive() {
+		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", prazo)
+	}
+}

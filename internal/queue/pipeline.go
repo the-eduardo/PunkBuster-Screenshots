@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pbss/internal/discord"
@@ -44,6 +45,11 @@ type Pipeline struct {
 	// causava "no such file or directory" quando o job duplicado tentava abrir
 	// um arquivo local já apagado pelo job original.
 	inFlight sync.Map
+
+	// lastPoll marca o último List() bem-sucedido do diretório remoto. É o sinal
+	// de vida do poller: atualiza mesmo quando não há arquivo nenhum, então a
+	// madrugada vazia do servidor não gera falso alarme.
+	lastPoll atomic.Int64
 }
 
 func (p *Pipeline) Run(ctx context.Context) error {
@@ -52,6 +58,8 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 
 	go p.runJanitor(ctx)
+
+	p.lastPoll.Store(time.Now().Unix())
 
 	for {
 		select {
@@ -72,6 +80,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			sleepOrDone(ctx, 30*time.Second)
 			continue
 		}
+		p.lastPoll.Store(time.Now().Unix())
 
 		pending := 0
 		for _, f := range files {
@@ -91,6 +100,16 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		// Se havia arquivos, volta imediatamente pro topo do loop pra checar se
 		// chegaram mais durante o processamento (sem esperar WaitingTime).
 	}
+}
+
+// PollAlive diz se o poller listou o diretório remoto recentemente. O prazo é
+// derivado do WaitingTime pra não gerar falso alarme com intervalo longo.
+func (p *Pipeline) PollAlive() bool {
+	last := p.lastPoll.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(last, 0)) < 3*p.WaitingTime+5*time.Minute
 }
 
 func (p *Pipeline) processFile(f source.FileInfo) {
