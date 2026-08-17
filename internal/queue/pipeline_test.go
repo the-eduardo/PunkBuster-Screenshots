@@ -165,14 +165,26 @@ func TestPollAlivePollRecente(t *testing.T) {
 	}
 }
 
-// TestPollAlivePollExpirado prova o limite: 3*WaitingTime+5min estourado tem
-// que virar false. É o caso que a prova por mutação (trocar < por >) derruba.
+// TestPollAlivePollExpirado prova o limite: pollStaleAfter (15min, decisao do
+// Eduardo em 17/08) estourado tem que virar false. É o caso que a prova por
+// mutação (trocar < por >) derruba.
 func TestPollAlivePollExpirado(t *testing.T) {
 	p := &Pipeline{WaitingTime: 20 * time.Second}
-	prazo := 3*p.WaitingTime + 5*time.Minute
-	expirado := time.Now().Add(-prazo - time.Second)
+	expirado := time.Now().Add(-pollStaleAfter - time.Second)
 	p.lastPoll.Store(expirado.Unix())
 	if p.PollAlive() {
-		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", prazo)
+		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", pollStaleAfter)
+	}
+}
+
+// TestPollAlivePollDentroDoPrazoMasQuaseNoLimite prova que o prazo é fixo em
+// 15min, não derivado de WaitingTime — mesmo com WaitingTime alto, um poll de
+// 14min atrás ainda conta como vivo.
+func TestPollAlivePollDentroDoPrazoMasQuaseNoLimite(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	quaseExpirado := time.Now().Add(-pollStaleAfter + 30*time.Second)
+	p.lastPoll.Store(quaseExpirado.Unix())
+	if !p.PollAlive() {
+		t.Errorf("PollAlive deveria ser true um pouco antes do prazo de %v", pollStaleAfter)
 	}
 }

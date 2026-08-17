@@ -102,14 +102,21 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 }
 
-// PollAlive diz se o poller listou o diretório remoto recentemente. O prazo é
-// derivado do WaitingTime pra não gerar falso alarme com intervalo longo.
+// pollStaleAfter e' o prazo de silencio do poller que o PollAlive tolera antes
+// de considerar o poller morto. Fixo em 15min por decisao do Eduardo
+// (17/08/2026): a maquina do servidor de origem as vezes demora a reiniciar, e
+// um prazo mais curto (a proposta original media 3*WaitingTime+5min, ~6min com
+// WAITING_TIME=20s em producao) viraria ruido de reboot. Var (nao const) pra
+// teste poder encurtar sem esperar 15min de verdade.
+var pollStaleAfter = 15 * time.Minute
+
+// PollAlive diz se o poller listou o diretório remoto recentemente.
 func (p *Pipeline) PollAlive() bool {
 	last := p.lastPoll.Load()
 	if last == 0 {
 		return false
 	}
-	return time.Since(time.Unix(last, 0)) < 3*p.WaitingTime+5*time.Minute
+	return time.Since(time.Unix(last, 0)) < pollStaleAfter
 }
 
 func (p *Pipeline) processFile(f source.FileInfo) {
