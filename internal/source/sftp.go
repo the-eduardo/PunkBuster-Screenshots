@@ -15,6 +15,11 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// sftpProbeTimeout e' o prazo do probe de liveness em EnsureConnected. Var de
+// pacote (e nao literal no select) para os testes poderem encurta-lo: com 10s
+// fixos, o caso "conexao meio-aberta" seria intestavel em tempo de suite.
+var sftpProbeTimeout = 10 * time.Second
+
 // SFTPSource implementa Source sobre um servidor SFTP, reconectando sob demanda.
 type SFTPSource struct {
 	addr   string
@@ -122,9 +127,9 @@ func (s *SFTPSource) EnsureConnected() error {
 			if err == nil {
 				return nil
 			}
-		case <-time.After(10 * time.Second):
-			slog.Warn("probe do sFTP não respondeu em 10s, descartando conexão e reconectando",
-				"addr", s.addr)
+		case <-time.After(sftpProbeTimeout):
+			slog.Warn("probe do sFTP não respondeu no prazo, descartando conexão e reconectando",
+				"prazo", sftpProbeTimeout, "addr", s.addr)
 		}
 		s.closeLocked()
 	}
