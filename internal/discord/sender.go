@@ -40,6 +40,12 @@ type SendResult struct {
 type Sender struct {
 	session *discordgo.Session
 	jobs    chan SendJob
+	done    chan struct{}
+
+	// processFn existe só para o teste poder trocar o processamento real (que
+	// chama a REST do Discord) por um dublê rápido, sem precisar de rede nem
+	// pagar o backoff de maxAttempts. Em produção é sempre s.process.
+	processFn func(SendJob)
 
 	// guildCache memoriza o guild de cada canal. O lookup e' feito uma vez por
 	// canal e o resultado nao muda em runtime, entao nao vale pagar REST por
@@ -48,7 +54,9 @@ type Sender struct {
 }
 
 func NewSender(session *discordgo.Session, queueSize int) *Sender {
-	return &Sender{session: session, jobs: make(chan SendJob, queueSize)}
+	s := &Sender{session: session, jobs: make(chan SendJob, queueSize), done: make(chan struct{})}
+	s.processFn = s.process
+	return s
 }
 
 // guildFor descobre a que servidor o canal pertence.
@@ -93,13 +101,23 @@ func (s *Sender) Enqueue(job SendJob) {
 
 // Run consome a fila até o canal ser fechado. Deve rodar em goroutine própria.
 func (s *Sender) Run() {
+	defer close(s.done)
 	for job := range s.jobs {
-		s.process(job)
+		s.processFn(job)
 	}
 }
 
-func (s *Sender) Close() {
+// Close para de aceitar jobs novos e espera a fila atual drenar, até o prazo
+// informado. Se o prazo estourar, retorna mesmo assim — os jobs restantes
+// morrem junto com o processo, exatamente como no comportamento anterior a
+// esta mudança, nunca pior.
+func (s *Sender) Close(timeout time.Duration) {
 	close(s.jobs)
+	select {
+	case <-s.done:
+	case <-time.After(timeout):
+		slog.Warn("sender nao drenou a fila no prazo do shutdown", "prazo", timeout)
+	}
 }
 
 const maxAttempts = 4
