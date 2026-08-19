@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pbss/internal/discord"
@@ -44,6 +45,11 @@ type Pipeline struct {
 	// causava "no such file or directory" quando o job duplicado tentava abrir
 	// um arquivo local já apagado pelo job original.
 	inFlight sync.Map
+
+	// lastPoll marca o último List() bem-sucedido do diretório remoto. É o sinal
+	// de vida do poller: atualiza mesmo quando não há arquivo nenhum, então a
+	// madrugada vazia do servidor não gera falso alarme.
+	lastPoll atomic.Int64
 }
 
 func (p *Pipeline) Run(ctx context.Context) error {
@@ -52,6 +58,16 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 
 	go p.runJanitor(ctx)
+
+	// Store otimista logo no boot: é uma janela de graça, não a confirmação de
+	// um List() bem-sucedido. Se o SFTP/FTP estiver mal configurado desde o
+	// início (credencial errada, host inalcançável), PollAlive() ainda reporta
+	// "vivo" por até pollStaleAfter após cada restart — aceitável porque (a) é
+	// estritamente melhor que o comportamento anterior a esta mudança, que não
+	// tinha checagem de poller nenhuma, e (b) segue o mesmo raciocínio de
+	// pollStaleAfter: dar tempo do servidor remoto acordar sem gerar ruído de
+	// reboot. Achado do comitê rápido de 19/08/2026 (item 3).
+	p.lastPoll.Store(time.Now().Unix())
 
 	for {
 		select {
@@ -72,6 +88,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			sleepOrDone(ctx, 30*time.Second)
 			continue
 		}
+		p.lastPoll.Store(time.Now().Unix())
 
 		pending := 0
 		for _, f := range files {
@@ -91,6 +108,23 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		// Se havia arquivos, volta imediatamente pro topo do loop pra checar se
 		// chegaram mais durante o processamento (sem esperar WaitingTime).
 	}
+}
+
+// pollStaleAfter e' o prazo de silencio do poller que o PollAlive tolera antes
+// de considerar o poller morto. Fixo em 15min por decisao do Eduardo
+// (17/08/2026): a maquina do servidor de origem as vezes demora a reiniciar, e
+// um prazo mais curto (a proposta original media 3*WaitingTime+5min, ~6min com
+// WAITING_TIME=20s em producao) viraria ruido de reboot. Var (nao const) pra
+// teste poder encurtar sem esperar 15min de verdade.
+var pollStaleAfter = 15 * time.Minute
+
+// PollAlive diz se o poller listou o diretório remoto recentemente.
+func (p *Pipeline) PollAlive() bool {
+	last := p.lastPoll.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(last, 0)) < pollStaleAfter
 }
 
 func (p *Pipeline) processFile(f source.FileInfo) {

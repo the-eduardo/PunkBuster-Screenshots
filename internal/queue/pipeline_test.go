@@ -146,3 +146,45 @@ func TestOnSendResultLimpaMesmoComIndiceFalhando(t *testing.T) {
 		t.Errorf("remoto deveria ter sido apagado mesmo com o indice falhando, Delete=%v", src.deleted)
 	}
 }
+
+// TestPollAliveSemPollNenhum cobre o estado inicial antes do primeiro List():
+// lastPoll ainda em zero não pode ser lido como "vivo agora mesmo".
+func TestPollAliveSemPollNenhum(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	if p.PollAlive() {
+		t.Errorf("PollAlive deveria ser false antes de qualquer List() bem-sucedido")
+	}
+}
+
+// TestPollAlivePollRecente é o caminho feliz: List() acabou de acontecer.
+func TestPollAlivePollRecente(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	p.lastPoll.Store(time.Now().Unix())
+	if !p.PollAlive() {
+		t.Errorf("PollAlive deveria ser true logo apos um Store recente")
+	}
+}
+
+// TestPollAlivePollExpirado prova o limite: pollStaleAfter (15min, decisao do
+// Eduardo em 17/08) estourado tem que virar false. É o caso que a prova por
+// mutação (trocar < por >) derruba.
+func TestPollAlivePollExpirado(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	expirado := time.Now().Add(-pollStaleAfter - time.Second)
+	p.lastPoll.Store(expirado.Unix())
+	if p.PollAlive() {
+		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", pollStaleAfter)
+	}
+}
+
+// TestPollAlivePollDentroDoPrazoMasQuaseNoLimite prova que o prazo é fixo em
+// 15min, não derivado de WaitingTime — mesmo com WaitingTime alto, um poll de
+// 14min atrás ainda conta como vivo.
+func TestPollAlivePollDentroDoPrazoMasQuaseNoLimite(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Second}
+	quaseExpirado := time.Now().Add(-pollStaleAfter + 30*time.Second)
+	p.lastPoll.Store(quaseExpirado.Unix())
+	if !p.PollAlive() {
+		t.Errorf("PollAlive deveria ser true um pouco antes do prazo de %v", pollStaleAfter)
+	}
+}

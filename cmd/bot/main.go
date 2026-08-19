@@ -94,8 +94,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Dead-man switch do Kuma: heartbeat so com o gateway conectado.
-	discord.StartKumaHeartbeat(ctx, session)
+	// Dead-man switch do Kuma: heartbeat so com o gateway conectado e o poller
+	// de screenshots ainda listando o diretorio remoto.
+	discord.StartKumaHeartbeat(ctx, session, pipeline.PollAlive)
 
 	go func() {
 		t := time.NewTicker(15 * time.Minute)
