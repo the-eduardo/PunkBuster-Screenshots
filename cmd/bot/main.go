@@ -77,7 +77,7 @@ func main() {
 
 	sender := discord.NewSender(session, 500)
 	go sender.Run()
-	defer sender.Close()
+	defer sender.Close(8 * time.Second) // cabe no grace de shutdown de 10s do Docker
 
 	pipeline := &queue.Pipeline{
 		ServerLabel:    cfg.ServerName,
