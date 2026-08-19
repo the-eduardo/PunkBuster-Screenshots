@@ -59,6 +59,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 	go p.runJanitor(ctx)
 
+	// Store otimista logo no boot: é uma janela de graça, não a confirmação de
+	// um List() bem-sucedido. Se o SFTP/FTP estiver mal configurado desde o
+	// início (credencial errada, host inalcançável), PollAlive() ainda reporta
+	// "vivo" por até pollStaleAfter após cada restart — aceitável porque (a) é
+	// estritamente melhor que o comportamento anterior a esta mudança, que não
+	// tinha checagem de poller nenhuma, e (b) segue o mesmo raciocínio de
+	// pollStaleAfter: dar tempo do servidor remoto acordar sem gerar ruído de
+	// reboot. Achado do comitê rápido de 19/08/2026 (item 3).
 	p.lastPoll.Store(time.Now().Unix())
 
 	for {
