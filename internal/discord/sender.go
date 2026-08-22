@@ -122,6 +122,12 @@ func (s *Sender) Close(timeout time.Duration) {
 
 const maxAttempts = 4
 
+// retryBackoff existe só pra suíte poder encurtar a espera entre tentativas;
+// em produção é sempre attempt². Var de pacote, não exportada.
+var retryBackoff = func(attempt int) time.Duration {
+	return time.Duration(attempt*attempt) * time.Second
+}
+
 func (s *Sender) process(job SendJob) {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -139,7 +145,13 @@ func (s *Sender) process(job SendJob) {
 		lastErr = err
 		slog.Warn("falha ao enviar screenshot ao discord, tentando de novo",
 			"arquivo", job.FileName, "tentativa", attempt, "erro", err)
-		time.Sleep(time.Duration(attempt*attempt) * time.Second)
+		// Nao dormir depois da ULTIMA tentativa: nao ha 5a chamada esperando por
+		// esse tempo, e o Sender e serial (comentario no topo do arquivo) — cada
+		// job que falha de vez segurava a fila inteira por mais attempt²s a toa,
+		// furando o prazo de Close() no shutdown (cmd/bot/main.go).
+		if attempt < maxAttempts {
+			time.Sleep(retryBackoff(attempt))
+		}
 	}
 	job.Done(SendResult{Err: fmt.Errorf("falhou após %d tentativas: %w", maxAttempts, lastErr)})
 }
