@@ -2,6 +2,7 @@ package commands
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,6 +135,59 @@ func TestFormatEntriesLinkSoComOsTresCamposPreenchidos(t *testing.T) {
 		if out := formatEntries([]storage.ScreenshotRecord{rec}); strings.Contains(out, "discord.com/channels") {
 			t.Errorf("sem %s o link nao pode ser montado (viraria URL quebrada): %q", faltando, out)
 		}
+	}
+}
+
+// Uma pagina alem da ultima (page=2 com so 6 resultados/2 paginas) e o
+// cenario que nenhum dos testes antigos cobria: renderPage clampava so o
+// `end`, entao start (10) > end (6) e o slice results[start:end] PANICA. Como
+// o discordgo nao tem recover(), esse panic dentro da goroutine da interacao
+// mataria o processo inteiro. Depois do clamp em start, a pagina fica vazia
+// em vez de explodir.
+func TestRenderPagePastaLastPageNaoPanica(t *testing.T) {
+	embed, comps := renderPage(&searchState{query: "q", results: registros(6), page: 2})
+	if embed.Description != "_nenhum resultado nesta página_" {
+		t.Errorf("pagina alem da ultima deveria vir vazia, veio %q", embed.Description)
+	}
+	prevDis, nextDis := botoes(t, comps)
+	if !nextDis {
+		t.Error("com a pagina fora da faixa, Proxima deveria continuar desabilitada")
+	}
+	_ = prevDis
+}
+
+// TestAdvancePageConcorrenteNaoEstouraFaixa reproduz o clique duplo: N
+// goroutines chamando advancePage no mesmo msgID ao mesmo tempo, como o
+// discordgo despacha handlers de interacao (event.go: `go
+// eh.eventHandler.Handle(s, i)` quando SyncEvents e false, que e o default
+// aqui — ver session.go). Antes da correcao, o mutex era solto antes de ler e
+// escrever state.page: duas goroutines liam a mesma pagina, passavam juntas
+// pelo guard de limite e incrementavam duas vezes, jogando page pra fora da
+// faixa. Com advancePage segurando o lock durante leitura+escrita+render,
+// page nunca deveria ultrapassar a ultima pagina valida.
+func TestAdvancePageConcorrenteNaoEstouraFaixa(t *testing.T) {
+	h := NewHandler(nil)
+	const totalResultados = 6 // 2 paginas de pageSize=5: paginas validas 0 e 1
+	h.states["m"] = &searchState{query: "q", results: registros(totalResultados), page: 0}
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			h.advancePage("m", "pbss_next")
+		}()
+	}
+	wg.Wait()
+
+	h.mu.Lock()
+	page := h.states["m"].page
+	h.mu.Unlock()
+
+	const ultimaPaginaValida = 1
+	if page > ultimaPaginaValida {
+		t.Fatalf("state.page = %d; nao deveria ultrapassar a ultima pagina valida (%d) mesmo sob %d cliques concorrentes", page, ultimaPaginaValida, goroutines)
 	}
 }
 

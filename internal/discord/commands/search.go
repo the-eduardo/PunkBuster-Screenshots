@@ -192,9 +192,7 @@ func (h *Handler) handleComponent(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
-	h.mu.Lock()
-	state, ok := h.states[i.Message.ID]
-	h.mu.Unlock()
+	embed, components, ok := h.advancePage(i.Message.ID, data.CustomID)
 	if !ok {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
@@ -203,18 +201,39 @@ func (h *Handler) handleComponent(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
-	if data.CustomID == "pbss_prev" && state.page > 0 {
-		state.page--
-	}
-	if data.CustomID == "pbss_next" && (state.page+1)*pageSize < len(state.results) {
-		state.page++
-	}
-
-	embed, components := renderPage(state)
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: components},
 	})
+}
+
+// advancePage segura h.mu durante o lookup, a mutacao de page e o render
+// inteiros. O discordgo despacha cada interacao numa goroutine propria
+// (SyncEvents fica false em session.go), entao dois cliques rapidos no mesmo
+// botao rodam concorrentes: sem o lock cobrindo as tres etapas, as duas
+// goroutines podem ler o mesmo state.page, passar juntas pelo guard de limite
+// e incrementar duas vezes, jogando a pagina pra fora da faixa (renderPage
+// entao monta results[start:end] com start > end e panica — sem recover no
+// discordgo isso mata o processo inteiro). renderPage e formatacao pura de
+// string, sem I/O, entao chama-la dentro do lock nao bloqueia nada.
+func (h *Handler) advancePage(msgID, customID string) (*discordgo.MessageEmbed, []discordgo.MessageComponent, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	state, ok := h.states[msgID]
+	if !ok {
+		return nil, nil, false
+	}
+
+	if customID == "pbss_prev" && state.page > 0 {
+		state.page--
+	}
+	if customID == "pbss_next" && (state.page+1)*pageSize < len(state.results) {
+		state.page++
+	}
+
+	embed, components := renderPage(state)
+	return embed, components, true
 }
 
 func (h *Handler) lookup(termo string, limit int) ([]storage.ScreenshotRecord, error) {
@@ -227,6 +246,12 @@ func (h *Handler) lookup(termo string, limit int) ([]storage.ScreenshotRecord, e
 
 func renderPage(state *searchState) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	start := state.page * pageSize
+	if start > len(state.results) {
+		// Defesa em profundidade: advancePage ja impede page sair da faixa sob
+		// concorrencia, mas start clampado garante end >= start mesmo se algum
+		// outro caminho futuro chegar aqui com state.page fora do esperado.
+		start = len(state.results)
+	}
 	end := start + pageSize
 	if end > len(state.results) {
 		end = len(state.results)
