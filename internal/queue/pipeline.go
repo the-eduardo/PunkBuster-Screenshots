@@ -140,6 +140,17 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 		}
 	}()
 
+	// ModTime vem ANTES do Open: no FTP, Open/Retr abre uma conexão de dados
+	// cujo Close consome o "226" pendente na conexão de CONTROLE (doc do
+	// jlaffaye/ftp), e qualquer comando emitido nessa mesma conexão antes desse
+	// Close (como MDTM) lê a resposta errada e desalinha todas as respostas
+	// seguintes. MDTM antes de RETR é uso legal de FTP e o valor não muda, já
+	// que o arquivo não é escrito entre as duas chamadas.
+	capturedAt := f.ModTime
+	if mt, err := p.Src.ModTime(p.SFTPFolder, f.Name); err == nil {
+		capturedAt = mt
+	}
+
 	remote, err := p.Src.Open(p.SFTPFolder, f.Name)
 	if err != nil {
 		slog.Error("não foi possível abrir arquivo remoto", "arquivo", f.Name, "erro", err)
@@ -160,11 +171,7 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 		return
 	}
 	local.Close()
-
-	capturedAt := f.ModTime
-	if mt, err := p.Src.ModTime(p.SFTPFolder, f.Name); err == nil {
-		capturedAt = mt
-	}
+	remote.Close() // fecha o handle de dados antes de qualquer novo comando na conexão de controle (o defer acima cobre os returns adiantados; Close é idempotente)
 
 	data, err := os.ReadFile(localPath)
 	if err != nil {

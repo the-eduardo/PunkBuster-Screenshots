@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,5 +187,83 @@ func TestPollAlivePollDentroDoPrazoMasQuaseNoLimite(t *testing.T) {
 	p.lastPoll.Store(quaseExpirado.Unix())
 	if !p.PollAlive() {
 		t.Errorf("PollAlive deveria ser true um pouco antes do prazo de %v", pollStaleAfter)
+	}
+}
+
+// trackedReadCloser simula o handle de dados de uma conexão FTP: fica "aberto"
+// até Close() ser chamado, exatamente como o Response do jlaffaye/ftp que
+// consome o 226 pendente na conexão de controle só no seu Close.
+type trackedReadCloser struct {
+	r      io.Reader
+	aberto *bool
+}
+
+func (t *trackedReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
+func (t *trackedReadCloser) Close() error                { *t.aberto = false; return nil }
+
+// fakeSourceFTP denuncia (via t.Errorf) qualquer comando emitido na conexão de
+// controle simulada (ModTime, Delete) enquanto o handle de dados do Open ainda
+// está aberto — o sintoma exato da desincronização de protocolo do FTP descrita
+// na proposta de 23/08.
+type fakeSourceFTP struct {
+	t      *testing.T
+	aberto bool
+
+	modTimeCalls int
+	deleteCalls  int
+}
+
+func (f *fakeSourceFTP) EnsureConnected() error { return nil }
+func (f *fakeSourceFTP) List(string) ([]source.FileInfo, error) {
+	return nil, errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceFTP) Open(dir, name string) (io.ReadCloser, error) {
+	f.aberto = true
+	return &trackedReadCloser{r: strings.NewReader("png-falso-conteudo"), aberto: &f.aberto}, nil
+}
+func (f *fakeSourceFTP) ModTime(dir, name string) (time.Time, error) {
+	f.modTimeCalls++
+	if f.aberto {
+		f.t.Errorf("ModTime chamado com a conexao de dados ainda aberta")
+	}
+	return time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC), nil
+}
+func (f *fakeSourceFTP) Delete(dir, name string) error {
+	f.deleteCalls++
+	if f.aberto {
+		f.t.Errorf("Delete chamado com a conexao de dados ainda aberta")
+	}
+	return nil
+}
+func (f *fakeSourceFTP) Close() error { return nil }
+
+// TestProcessFileNaoEmiteComandoComHandleAberto prova a correção de 23/08: no
+// FTP, MDTM (e, por extensão, DELE em onSendResult) não podem ser emitidos na
+// conexão de controle enquanto o handle de dados do RETR (Open) segue aberto,
+// senão a resposta 226 pendente do RETR é lida como se fosse a resposta do
+// comando seguinte, desalinhando todas as respostas dali em diante. Exercita
+// processFile de ponta a ponta — o mesmo método que Run() chama a cada arquivo
+// listado (pipeline.go:102) — e não uma função isolada.
+//
+// Sender: NewSender(nil, 1) é seguro aqui porque Enqueue só empurra pro canal
+// interno (mesmo raciocínio já registrado para sender.go:148: session só é
+// tocado dentro de process(), que Run() nunca chega a rodar neste teste).
+func TestProcessFileNaoEmiteComandoComHandleAberto(t *testing.T) {
+	src := &fakeSourceFTP{t: t}
+	p := &Pipeline{
+		ServerLabel: "servidor-de-teste",
+		SFTPFolder:  "pb",
+		TempDir:     t.TempDir(),
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	p.processFile(source.FileInfo{Name: "pb000001.png", Size: 2000, ModTime: time.Now()})
+
+	if src.modTimeCalls != 1 {
+		t.Errorf("esperava 1 chamada a ModTime, veio %d", src.modTimeCalls)
+	}
+	if src.aberto {
+		t.Errorf("handle remoto deveria estar fechado apos processFile retornar")
 	}
 }
