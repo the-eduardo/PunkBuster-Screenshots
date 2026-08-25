@@ -1,7 +1,9 @@
 package discord
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"sync"
@@ -137,6 +139,15 @@ func (s *Sender) process(job SendJob) {
 			return
 		}
 		lastErr = err
+		if errors.Is(err, fs.ErrNotExist) {
+			// O arquivo local sumiu antes do envio (ex.: o janitor o apagou por
+			// retenção durante uma indisponibilidade prolongada do Discord, ver
+			// pipeline.go:236). Retentar não resolve — o arquivo não vai
+			// reaparecer em segundos — e as maxAttempts tentativas bloqueariam a
+			// fila serial (Run, sender.go:105) por até 30s à toa.
+			job.Done(SendResult{Err: fmt.Errorf("arquivo local sumiu antes do envio: %w", err)})
+			return
+		}
 		slog.Warn("falha ao enviar screenshot ao discord, tentando de novo",
 			"arquivo", job.FileName, "tentativa", attempt, "erro", err)
 		time.Sleep(time.Duration(attempt*attempt) * time.Second)
