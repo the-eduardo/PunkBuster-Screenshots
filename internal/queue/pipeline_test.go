@@ -148,6 +148,65 @@ func TestOnSendResultLimpaMesmoComIndiceFalhando(t *testing.T) {
 	}
 }
 
+// TestOnSendResultComSourceDesconectadaNaoPanica exercita a fiação real, não
+// uma função isolada: p.Src.Delete em pipeline.go:228 é chamado com o tipo
+// concreto SFTPSource (não um dublê), no mesmo estado que um EnsureConnected
+// que falhou deixa (client nil) — o Sender confirma o envio numa goroutine
+// independente do poller, sem esperar a origem reconectar. Antes da guarda de
+// nil em internal/source/sftp.go isso panicava dentro do pkg/sftp e derrubava
+// o processo; a prova por mutação é remover a guarda e ver este teste falhar.
+func TestOnSendResultComSourceDesconectadaNaoPanica(t *testing.T) {
+	src := &source.SFTPSource{}
+	p, store := newTestPipeline(t, src)
+	local := arquivoLocal(t, "pb000004.png")
+
+	p.inFlight.Store("pb000004.png", true)
+	p.onSendResult("pb", "pb000004.png", local,
+		parser.Info{GUID: "jkl012", PlayerName: "Jogador"}, time.Now().UTC(),
+		discord.SendResult{GuildID: "g1", ChannelID: "c1", MessageID: "m4"})
+
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Errorf("arquivo local deveria ter sido apagado mesmo com Delete remoto falhando")
+	}
+	recs, err := store.SearchByGUID("jkl012", 10)
+	if err != nil {
+		t.Fatalf("SearchByGUID falhou: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("esperava 1 linha no indice (o envio em si foi confirmado), veio %d", len(recs))
+	}
+	if _, ainda := p.inFlight.Load("pb000004.png"); ainda {
+		t.Errorf("inFlight deveria ter sido liberado")
+	}
+}
+
+// TestOnSendResultComFTPDesconectadaNaoPanica é o mesmo caso para o FTPSource
+// concreto (caminho de código separado em internal/source/ftp.go).
+func TestOnSendResultComFTPDesconectadaNaoPanica(t *testing.T) {
+	src := &source.FTPSource{}
+	p, store := newTestPipeline(t, src)
+	local := arquivoLocal(t, "pb000005.png")
+
+	p.inFlight.Store("pb000005.png", true)
+	p.onSendResult("pb", "pb000005.png", local,
+		parser.Info{GUID: "mno345", PlayerName: "Jogador"}, time.Now().UTC(),
+		discord.SendResult{GuildID: "g1", ChannelID: "c1", MessageID: "m5"})
+
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Errorf("arquivo local deveria ter sido apagado mesmo com Delete remoto falhando")
+	}
+	recs, err := store.SearchByGUID("mno345", 10)
+	if err != nil {
+		t.Fatalf("SearchByGUID falhou: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("esperava 1 linha no indice (o envio em si foi confirmado), veio %d", len(recs))
+	}
+	if _, ainda := p.inFlight.Load("pb000005.png"); ainda {
+		t.Errorf("inFlight deveria ter sido liberado")
+	}
+}
+
 // TestPollAliveSemPollNenhum cobre o estado inicial antes do primeiro List():
 // lastPoll ainda em zero não pode ser lido como "vivo agora mesmo".
 func TestPollAliveSemPollNenhum(t *testing.T) {

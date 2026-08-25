@@ -20,6 +20,15 @@ import (
 // fixos, o caso "conexao meio-aberta" seria intestavel em tempo de suite.
 var sftpProbeTimeout = 10 * time.Second
 
+// errSFTPNotConnected e' devolvido quando um metodo de dados e' chamado com
+// s.client nil. Isso acontece quando EnsureConnected falhou (closeLocked()
+// zerou o client e o ssh.Dial seguinte tambem falhou): o poller dorme e tenta
+// de novo, mas o Sender roda em goroutine independente e continua chamando
+// Delete() ao confirmar envios da fila local, que nao dependem da origem.
+// Sem esta guarda o receiver nil desreferencia dentro do pkg/sftp e panica,
+// derrubando o processo e a fila de jobs em memoria junto.
+var errSFTPNotConnected = errors.New("sFTP nao conectado")
+
 // SFTPSource implementa Source sobre um servidor SFTP, reconectando sob demanda.
 type SFTPSource struct {
 	addr   string
@@ -151,6 +160,9 @@ func (s *SFTPSource) EnsureConnected() error {
 func (s *SFTPSource) List(dir string) ([]FileInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return nil, errSFTPNotConnected
+	}
 	entries, err := s.client.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -168,12 +180,18 @@ func (s *SFTPSource) List(dir string) ([]FileInfo, error) {
 func (s *SFTPSource) Open(dir, name string) (io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return nil, errSFTPNotConnected
+	}
 	return s.client.Open(dir + "/" + name)
 }
 
 func (s *SFTPSource) ModTime(dir, name string) (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return time.Time{}, errSFTPNotConnected
+	}
 	info, err := s.client.Stat(dir + "/" + name)
 	if err != nil {
 		return time.Time{}, err
@@ -184,6 +202,9 @@ func (s *SFTPSource) ModTime(dir, name string) (time.Time, error) {
 func (s *SFTPSource) Delete(dir, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return errSFTPNotConnected
+	}
 	return s.client.Remove(dir + "/" + name)
 }
 
