@@ -1,6 +1,7 @@
 package source
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/jlaffaye/ftp"
 )
+
+// errFTPNotConnected e' devolvido quando um metodo de dados e' chamado com
+// s.client nil (EnsureConnected falhou e nao reconectou ainda). Ver o
+// comentario equivalente em sftp.go: sem esta guarda o Sender, que roda em
+// goroutine independente e continua confirmando envios da fila local, causa
+// um receiver nil dentro do client de FTP.
+var errFTPNotConnected = errors.New("FTP nao conectado")
 
 // FTPSource implementa Source sobre um servidor FTP, reconectando sob demanda.
 type FTPSource struct {
@@ -48,6 +56,9 @@ func (s *FTPSource) EnsureConnected() error {
 func (s *FTPSource) List(dir string) ([]FileInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return nil, errFTPNotConnected
+	}
 	entries, err := s.client.List(dir)
 	if err != nil {
 		return nil, err
@@ -65,12 +76,18 @@ func (s *FTPSource) List(dir string) ([]FileInfo, error) {
 func (s *FTPSource) Open(dir, name string) (io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return nil, errFTPNotConnected
+	}
 	return s.client.Retr(dir + "/" + name)
 }
 
 func (s *FTPSource) ModTime(dir, name string) (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return time.Time{}, errFTPNotConnected
+	}
 	if !s.client.IsGetTimeSupported() {
 		return time.Time{}, fmt.Errorf("servidor FTP não suporta MDTM")
 	}
@@ -80,6 +97,9 @@ func (s *FTPSource) ModTime(dir, name string) (time.Time, error) {
 func (s *FTPSource) Delete(dir, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.client == nil {
+		return errFTPNotConnected
+	}
 	return s.client.Delete(dir + "/" + name)
 }
 
