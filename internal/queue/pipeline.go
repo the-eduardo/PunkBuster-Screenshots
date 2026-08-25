@@ -110,13 +110,28 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 }
 
+// pollStaleGrace e' a folga POR CIMA do ciclo de poll (WaitingTime) que o
+// PollAlive tolera antes de considerar o poller morto. 15min por decisao do
+// Eduardo (17/08/2026): a maquina do servidor de origem as vezes demora a
+// reiniciar, e uma folga mais curta viraria ruido de reboot. Var (nao const)
+// pra teste poder encurtar sem esperar 15min de verdade.
+//
+// Corrigido em 20/08/2026: a calibracao original tratava essa constante como
+// o PRAZO TOTAL (fixo em 15min, independente de WaitingTime), sobre a premissa
+// errada de que WAITING_TIME e' em segundos. E' em minutos
+// (config.go:82-86: Duration(waitingMinutes)*time.Minute) — com o valor de
+// producao (20), o poller fica ate 20min em silencio entre List() sem arquivo
+// novo, e um prazo fixo de 15min julgava esse silencio normal como poller
+// morto em todo ciclo ocioso (49 WARN/dia medidos). O prazo agora e' o ciclo
+// real mais a folga.
+var pollStaleGrace = 15 * time.Minute
+
 // pollStaleAfter e' o prazo de silencio do poller que o PollAlive tolera antes
-// de considerar o poller morto. Fixo em 15min por decisao do Eduardo
-// (17/08/2026): a maquina do servidor de origem as vezes demora a reiniciar, e
-// um prazo mais curto (a proposta original media 3*WaitingTime+5min, ~6min com
-// WAITING_TIME=20s em producao) viraria ruido de reboot. Var (nao const) pra
-// teste poder encurtar sem esperar 15min de verdade.
-var pollStaleAfter = 15 * time.Minute
+// de considerar o poller morto: o proprio ciclo de espera (WaitingTime) mais a
+// folga de reboot (pollStaleGrace).
+func (p *Pipeline) pollStaleAfter() time.Duration {
+	return p.WaitingTime + pollStaleGrace
+}
 
 // PollAlive diz se o poller listou o diretório remoto recentemente.
 func (p *Pipeline) PollAlive() bool {
@@ -124,7 +139,7 @@ func (p *Pipeline) PollAlive() bool {
 	if last == 0 {
 		return false
 	}
-	return time.Since(time.Unix(last, 0)) < pollStaleAfter
+	return time.Since(time.Unix(last, 0)) < p.pollStaleAfter()
 }
 
 func (p *Pipeline) processFile(f source.FileInfo) {

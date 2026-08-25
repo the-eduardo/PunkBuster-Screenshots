@@ -165,26 +165,52 @@ func TestPollAlivePollRecente(t *testing.T) {
 	}
 }
 
-// TestPollAlivePollExpirado prova o limite: pollStaleAfter (15min, decisao do
-// Eduardo em 17/08) estourado tem que virar false. É o caso que a prova por
-// mutação (trocar < por >) derruba.
+// TestPollAlivePollExpirado prova o limite: WaitingTime+pollStaleGrace
+// estourado tem que virar false. É o caso que a prova por mutação (trocar <
+// por >) derruba.
 func TestPollAlivePollExpirado(t *testing.T) {
 	p := &Pipeline{WaitingTime: 20 * time.Second}
-	expirado := time.Now().Add(-pollStaleAfter - time.Second)
+	expirado := time.Now().Add(-p.pollStaleAfter() - time.Second)
 	p.lastPoll.Store(expirado.Unix())
 	if p.PollAlive() {
-		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", pollStaleAfter)
+		t.Errorf("PollAlive deveria ser false com lastPoll alem do prazo (%v)", p.pollStaleAfter())
 	}
 }
 
-// TestPollAlivePollDentroDoPrazoMasQuaseNoLimite prova que o prazo é fixo em
-// 15min, não derivado de WaitingTime — mesmo com WaitingTime alto, um poll de
-// 14min atrás ainda conta como vivo.
+// TestPollAlivePollDentroDoPrazoMasQuaseNoLimite prova que o prazo tem folga
+// sobre o proprio ciclo de poll (WaitingTime+pollStaleGrace) — um poll a 30s
+// do fim da folga ainda conta como vivo.
 func TestPollAlivePollDentroDoPrazoMasQuaseNoLimite(t *testing.T) {
 	p := &Pipeline{WaitingTime: 20 * time.Second}
-	quaseExpirado := time.Now().Add(-pollStaleAfter + 30*time.Second)
+	quaseExpirado := time.Now().Add(-p.pollStaleAfter() + 30*time.Second)
 	p.lastPoll.Store(quaseExpirado.Unix())
 	if !p.PollAlive() {
-		t.Errorf("PollAlive deveria ser true um pouco antes do prazo de %v", pollStaleAfter)
+		t.Errorf("PollAlive deveria ser true um pouco antes do prazo de %v", p.pollStaleAfter())
+	}
+}
+
+// TestPollAliveSobreviveUmCicloOciosoCompleto prova o bug real de producao:
+// com WAITING_TIME=20 (minutos, config.go:82-86), o poller dorme 20min entre
+// List() quando nao ha arquivo novo. Um prazo fixo de 15min (o que estava em
+// producao ate 20/08/2026) julgava esse silencio normal como poller morto
+// ANTES do proximo ciclo terminar — falso alarme em todo ciclo ocioso. Este
+// teste falha contra um pollStaleAfter fixo de 15min independente de
+// WaitingTime (o comportamento anterior a esta correção).
+func TestPollAliveSobreviveUmCicloOciosoCompleto(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Minute}
+	p.lastPoll.Store(time.Now().Add(-21 * time.Minute).Unix())
+	if !p.PollAlive() {
+		t.Errorf("PollAlive deveria ser true 21min apos o ultimo poll com WaitingTime=20min (um ciclo ocioso completo)")
+	}
+}
+
+// TestPollAliveMorreAlemDaFolga prova o outro lado do dead-man switch: passado
+// WaitingTime+pollStaleGrace, o poller e' mesmo considerado morto — a
+// recalibracao alarga o prazo, mas nao desliga o alarme.
+func TestPollAliveMorreAlemDaFolga(t *testing.T) {
+	p := &Pipeline{WaitingTime: 20 * time.Minute}
+	p.lastPoll.Store(time.Now().Add(-(20*time.Minute + pollStaleGrace + time.Minute)).Unix())
+	if p.PollAlive() {
+		t.Errorf("PollAlive deveria ser false alem de WaitingTime+pollStaleGrace")
 	}
 }
