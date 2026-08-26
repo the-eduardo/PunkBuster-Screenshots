@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -57,7 +58,20 @@ func StartKumaHeartbeat(ctx context.Context, s *discordgo.Session, pollAlive fun
 						warned = true
 					}
 				} else {
-					warned = false
+					// client.Get so devolve err em falha de TRANSPORTE. O Kuma
+					// devolve 404 a token de push desconhecido/vencido, e sem
+					// checar o status esse caso passava por sucesso — o
+					// dead-man switch ficava mudo dos dois lados.
+					if resp.StatusCode != http.StatusOK {
+						if !warned {
+							slog.Warn("push do Kuma recusado pelo servidor; KUMA_PUSH_URL pode estar invalido",
+								"status", resp.StatusCode) // NUNCA logar a url: ela carrega o token
+							warned = true
+						}
+					} else {
+						warned = false
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
 					_ = resp.Body.Close()
 				}
 			}
