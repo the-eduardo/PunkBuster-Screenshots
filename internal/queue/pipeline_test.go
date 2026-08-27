@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -281,6 +282,94 @@ func TestPollAliveMorreAlemDaFolga(t *testing.T) {
 type trackedReadCloser struct {
 	r      io.Reader
 	aberto *bool
+}
+
+// TestSweepTempDirRetencaoZeroPreservaArquivoEmVoo prova o defeito descrito na
+// proposta do enxame de 27/08: Pipeline é struct pública sem validação própria
+// (newTestPipeline monta um &Pipeline{} com RetentionHours zerado), e maxAge=0
+// faria o janitor apagar todo arquivo do TempDir a cada tick — inclusive um
+// baixado agora mesmo, ainda em voo aguardando confirmação de envio. A prova
+// por mutação é remover o "if p.RetentionHours <= 0" de retentionMaxAge (volta
+// ao código de produção anterior a esta correção): maxAge vira 0 e o arquivo
+// recém-criado passa a ser removido, derrubando este teste.
+func TestSweepTempDirRetencaoZeroPreservaArquivoEmVoo(t *testing.T) {
+	dir := t.TempDir()
+	p := &Pipeline{TempDir: dir, RetentionHours: 0}
+	path := filepath.Join(dir, "pb999001.png")
+	if err := os.WriteFile(path, []byte("em-voo"), 0o644); err != nil {
+		t.Fatalf("nao consegui criar o arquivo de teste: %v", err)
+	}
+
+	removed := p.sweepTempDir()
+
+	if removed != 0 {
+		t.Errorf("esperava 0 arquivos removidos com RetentionHours=0, removeu %d", removed)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("arquivo em voo nao deveria ter sido apagado: %v", err)
+	}
+}
+
+// TestSweepTempDirRemoveExpirado é o par obrigatório do teste anterior: sem
+// ele, um "fix" degenerado que nunca apaga nada (ex.: sempre usar 24h)
+// passaria sozinho. A mutação que o derruba é fazer retentionMaxAge ignorar
+// RetentionHours e sempre devolver 24h — o arquivo de 2h atrás com
+// RetentionHours=1 sobreviveria e este teste falharia.
+func TestSweepTempDirRemoveExpirado(t *testing.T) {
+	dir := t.TempDir()
+	p := &Pipeline{TempDir: dir, RetentionHours: 1}
+	path := filepath.Join(dir, "pb999002.png")
+	if err := os.WriteFile(path, []byte("expirado"), 0o644); err != nil {
+		t.Fatalf("nao consegui criar o arquivo de teste: %v", err)
+	}
+	velho := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, velho, velho); err != nil {
+		t.Fatalf("nao consegui ajustar o mtime do arquivo de teste: %v", err)
+	}
+
+	removed := p.sweepTempDir()
+
+	if removed != 1 {
+		t.Errorf("esperava 1 arquivo removido, removeu %d", removed)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("arquivo expirado deveria ter sido apagado")
+	}
+}
+
+// TestRunJanitorUsaRetencaoConfigurada exercita a fiação real (runJanitor),
+// não sweepTempDir isolada: se alguém remover a chamada a sweepTempDir de
+// dentro de runJanitor, os dois testes acima continuam verdes e o janitor de
+// produção fica inerte. A mutação que derruba este teste é exatamente essa —
+// fazer runJanitor ignorar sweepTempDir() no case do ticker.
+func TestRunJanitorUsaRetencaoConfigurada(t *testing.T) {
+	intervaloOriginal := janitorInterval
+	janitorInterval = 10 * time.Millisecond
+	t.Cleanup(func() { janitorInterval = intervaloOriginal })
+
+	dir := t.TempDir()
+	p := &Pipeline{TempDir: dir, RetentionHours: 1}
+	path := filepath.Join(dir, "pb999003.png")
+	if err := os.WriteFile(path, []byte("expirado"), 0o644); err != nil {
+		t.Fatalf("nao consegui criar o arquivo de teste: %v", err)
+	}
+	velho := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, velho, velho); err != nil {
+		t.Fatalf("nao consegui ajustar o mtime do arquivo de teste: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.runJanitor(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("runJanitor nao removeu o arquivo expirado dentro do prazo")
 }
 
 func (t *trackedReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
