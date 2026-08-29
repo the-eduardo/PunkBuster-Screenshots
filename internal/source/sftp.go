@@ -128,8 +128,12 @@ func (s *SFTPSource) EnsureConnected() error {
 		// Probe com prazo: em TCP meio-aberto o Getwd() nunca retorna, e como
 		// ele roda sob s.mu isso travaria o source inteiro, Close() incluso.
 		// O canal tem buffer 1 para o send nunca ficar preso mesmo após o timeout.
+		// cli é lido aqui, sob s.mu: a goroutine não pode ler s.client direto,
+		// porque closeLocked() (abaixo, no timeout) zera esse campo sem que a
+		// goroutine tenha nenhuma sincronização com essa escrita.
+		cli := s.client
 		done := make(chan error, 1)
-		go func() { _, err := s.client.Getwd(); done <- err }()
+		go func() { _, err := cli.Getwd(); done <- err }()
 
 		select {
 		case err := <-done:
