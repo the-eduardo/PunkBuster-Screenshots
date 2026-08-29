@@ -2,9 +2,13 @@ package discord
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -30,7 +34,10 @@ var kumaHeartbeatInterval = 5 * time.Minute
 //
 // Sem KUMA_PUSH_URL no ambiente e no-op.
 func StartKumaHeartbeat(ctx context.Context, s *discordgo.Session, pollAlive func() bool) {
-	url := os.Getenv("KUMA_PUSH_URL")
+	// TrimSpace: um \n/\r de copy-paste no .env viraria URL invalida — e o
+	// texto do erro de parse carregaria o token com o \n ESCAPADO, furando
+	// qualquer redacao por substituicao (achado do QA, comite 29/08/2026).
+	url := strings.TrimSpace(os.Getenv("KUMA_PUSH_URL"))
 	if url == "" {
 		return
 	}
@@ -52,12 +59,35 @@ func StartKumaHeartbeat(ctx context.Context, s *discordgo.Session, pollAlive fun
 				resp, err := client.Get(url + "?status=up&msg=gateway+ok")
 				if err != nil {
 					// Loga uma vez por sequencia de falhas, pra nao poluir o log.
+					// err de transporte e' um *url.Error, cujo texto embute a URL
+					// completa — e a URL do push carrega o token. Redigir POR
+					// CONSTRUCAO (Op + erro interno, nunca a URL): substituir a
+					// string da URL nao basta, porque o %q do url.Error escapa
+					// control chars e a busca literal deixa de casar (QA, 29/08).
 					if !warned {
-						slog.Warn("push do Kuma falhou", "erro", err)
+						msg := strings.ReplaceAll(err.Error(), url, "<kuma-url>")
+						var uerr *neturl.Error
+						if errors.As(err, &uerr) && uerr.Err != nil {
+							msg = uerr.Op + ": " + uerr.Err.Error()
+						}
+						slog.Warn("push do Kuma falhou", "erro", msg)
 						warned = true
 					}
 				} else {
-					warned = false
+					// client.Get so devolve err em falha de TRANSPORTE. O Kuma
+					// devolve 404 a token de push desconhecido/vencido, e sem
+					// checar o status esse caso passava por sucesso — o
+					// dead-man switch ficava mudo dos dois lados.
+					if resp.StatusCode != http.StatusOK {
+						if !warned {
+							slog.Warn("push do Kuma recusado pelo servidor; KUMA_PUSH_URL pode estar invalido",
+								"status", resp.StatusCode) // NUNCA logar a url: ela carrega o token
+							warned = true
+						}
+					} else {
+						warned = false
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
 					_ = resp.Body.Close()
 				}
 			}
