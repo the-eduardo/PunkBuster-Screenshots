@@ -190,6 +190,7 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 
 	data, err := os.ReadFile(localPath)
 	if err != nil {
+		os.Remove(localPath)
 		slog.Error("falha ao reler arquivo local pra extrair GUID", "arquivo", localPath, "erro", err)
 		return
 	}

@@ -375,6 +375,90 @@ func TestRunJanitorUsaRetencaoConfigurada(t *testing.T) {
 func (t *trackedReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
 func (t *trackedReadCloser) Close() error                { *t.aberto = false; return nil }
 
+// closeCorruptsLocal simula, no Close() do handle remoto (que em processFile
+// roda logo ANTES do os.ReadFile — pipeline.go:189-191), um erro de disco/
+// permissão no arquivo local recém-baixado: apaga o .png e recria o caminho
+// como diretório, forçando o ReadFile seguinte a falhar com EISDIR de forma
+// determinística, sem depender de root/permissão real. processFile fecha o
+// remote duas vezes (explícito na linha 189 e via defer na 174, documentado
+// como idempotente) — Close() só corrompe na primeira chamada, senão a
+// segunda recria o diretório depois do os.Remove do próprio fix e mascara o
+// comportamento que este teste prova.
+type closeCorruptsLocal struct {
+	r         io.Reader
+	localPath string
+	fechado   bool
+}
+
+func (c *closeCorruptsLocal) Read(p []byte) (int, error) { return c.r.Read(p) }
+func (c *closeCorruptsLocal) Close() error {
+	if c.fechado {
+		return nil
+	}
+	c.fechado = true
+	os.Remove(c.localPath)
+	return os.Mkdir(c.localPath, 0o755)
+}
+
+// fakeSourceReadFail devolve um closeCorruptsLocal no Open, pra exercitar o
+// ramo de erro do os.ReadFile em processFile. deleteCalls prova que o remoto
+// não é tocado nesse ramo — só o local.
+type fakeSourceReadFail struct {
+	tempDir     string
+	deleteCalls int
+}
+
+func (f *fakeSourceReadFail) EnsureConnected() error { return nil }
+func (f *fakeSourceReadFail) List(string) ([]source.FileInfo, error) {
+	return nil, errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceReadFail) Open(dir, name string) (io.ReadCloser, error) {
+	return &closeCorruptsLocal{r: strings.NewReader("png-falso"), localPath: filepath.Join(f.tempDir, name)}, nil
+}
+func (f *fakeSourceReadFail) ModTime(string, string) (time.Time, error) {
+	return time.Time{}, errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceReadFail) Delete(dir, name string) error {
+	f.deleteCalls++
+	return nil
+}
+func (f *fakeSourceReadFail) Close() error { return nil }
+
+// TestProcessFileApagaLocalQuandoReReadFalha prova o defeito da proposta do
+// enxame de 28/08: antes desta correção, uma falha no os.ReadFile pós-download
+// (pipeline.go:191-195) retornava sem apagar o .png, deixando-o órfão no
+// TempDir até a retenção do janitor. Exercita processFile de ponta a ponta —
+// o mesmo método que Run() chama a cada arquivo listado (pipeline.go:102) —
+// e prova, junto, que o remoto é preservado e o inFlight é liberado (nada foi
+// enfileirado). A prova por mutação é remover o novo os.Remove(localPath) do
+// ramo de erro: só a asserção 1 (arquivo local sumiu) cai; 2 e 3 continuam
+// verdes de propósito, porque travam o comportamento que o fix NÃO pode mudar.
+func TestProcessFileApagaLocalQuandoReReadFalha(t *testing.T) {
+	dir := t.TempDir()
+	src := &fakeSourceReadFail{tempDir: dir}
+	p := &Pipeline{
+		ServerLabel: "servidor-de-teste",
+		SFTPFolder:  "pb",
+		TempDir:     dir,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+	localPath := filepath.Join(dir, "pb000006.png")
+
+	p.inFlight.Store("pb000006.png", true)
+	p.processFile(source.FileInfo{Name: "pb000006.png", Size: 2000, ModTime: time.Now()})
+
+	if _, err := os.Lstat(localPath); !os.IsNotExist(err) {
+		t.Errorf("arquivo local deveria ter sido apagado apos falha de ReadFile, err=%v", err)
+	}
+	if src.deleteCalls != 0 {
+		t.Errorf("remoto nao deveria ter sido apagado nesse ramo, Delete chamado %d vez(es)", src.deleteCalls)
+	}
+	if _, aindaEmVoo := p.inFlight.Load("pb000006.png"); aindaEmVoo {
+		t.Errorf("inFlight deveria ter sido liberado (nada foi enfileirado)")
+	}
+}
+
 // fakeSourceFTP denuncia (via t.Errorf) qualquer comando emitido na conexão de
 // controle simulada (ModTime, Delete) enquanto o handle de dados do Open ainda
 // está aberto — o sintoma exato da desincronização de protocolo do FTP descrita
