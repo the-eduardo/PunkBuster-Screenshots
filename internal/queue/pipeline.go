@@ -252,41 +252,65 @@ func (p *Pipeline) onSendResult(dir, name, localPath string, info parser.Info, c
 	}
 }
 
+// janitorInterval e' o intervalo entre varreduras do janitor. Var (nao const)
+// pra teste poder encurtar sem esperar 15min de verdade, seguindo o mesmo
+// padrao ja aceito em pollStaleGrace e sftpProbeTimeout.
+var janitorInterval = 15 * time.Minute
+
+// retentionMaxAge e' a idade a partir da qual o janitor apaga um temporario.
+// RetentionHours <= 0 significa "nao configurado" — Pipeline e' struct publica
+// sem validacao propria (o helper newTestPipeline em pipeline_test.go ja
+// constroi um &Pipeline{} com o campo zerado) — e maxAge=0 faria o janitor
+// apagar TODO arquivo do TempDir a cada tick, inclusive os que estao em voo
+// aguardando confirmacao de envio. Espelha o default de config.go:105.
+func (p *Pipeline) retentionMaxAge() time.Duration {
+	if p.RetentionHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(p.RetentionHours) * time.Hour
+}
+
 // runJanitor força a limpeza de qualquer arquivo temporário mais velho que a
 // retenção configurada, mesmo sem confirmação de envio. É a rede de segurança
 // contra acúmulo de disco em cenários de falha prolongada do Discord.
 func (p *Pipeline) runJanitor(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(janitorInterval)
 	defer ticker.Stop()
-	maxAge := time.Duration(p.RetentionHours) * time.Hour
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			entries, err := os.ReadDir(p.TempDir)
-			if err != nil {
-				slog.Error("janitor: falha ao listar diretório temporário", "erro", err)
-				continue
-			}
-			removed := 0
-			for _, e := range entries {
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				if time.Since(info.ModTime()) > maxAge {
-					if err := os.Remove(filepath.Join(p.TempDir, e.Name())); err == nil {
-						removed++
-					}
-				}
-			}
-			if removed > 0 {
+			if removed := p.sweepTempDir(); removed > 0 {
 				slog.Warn("janitor: arquivos temporários expirados removidos sem confirmação de envio", "quantidade", removed)
 			}
 		}
 	}
+}
+
+// sweepTempDir apaga do TempDir todo arquivo mais velho que retentionMaxAge()
+// e devolve quantos arquivos foram removidos.
+func (p *Pipeline) sweepTempDir() int {
+	entries, err := os.ReadDir(p.TempDir)
+	if err != nil {
+		slog.Error("janitor: falha ao listar diretório temporário", "erro", err)
+		return 0
+	}
+	maxAge := p.retentionMaxAge()
+	removed := 0
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if time.Since(info.ModTime()) > maxAge {
+			if err := os.Remove(filepath.Join(p.TempDir, e.Name())); err == nil {
+				removed++
+			}
+		}
+	}
+	return removed
 }
 
 func sleepOrDone(ctx context.Context, d time.Duration) {
