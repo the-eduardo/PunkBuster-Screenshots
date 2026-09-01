@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -370,6 +371,68 @@ func TestRunJanitorUsaRetencaoConfigurada(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("runJanitor nao removeu o arquivo expirado dentro do prazo")
+}
+
+// fakeSourceAlwaysFailsOpen simula uma origem viva (List sempre acha o mesmo
+// arquivo) cujo download sempre falha (Open sempre erro) — o cenário exato do
+// busy-loop: pending++ incondicional fazia Run() voltar ao topo do loop sem
+// dormir, martelando List() sem sleep nenhum.
+type fakeSourceAlwaysFailsOpen struct {
+	mu        sync.Mutex
+	listCalls int
+}
+
+func (f *fakeSourceAlwaysFailsOpen) EnsureConnected() error { return nil }
+func (f *fakeSourceAlwaysFailsOpen) List(string) ([]source.FileInfo, error) {
+	f.mu.Lock()
+	f.listCalls++
+	f.mu.Unlock()
+	return []source.FileInfo{{Name: "pb000001.png", Size: 2000, ModTime: time.Now()}}, nil
+}
+func (f *fakeSourceAlwaysFailsOpen) Open(string, string) (io.ReadCloser, error) {
+	return nil, errors.New("download sempre falha neste teste")
+}
+func (f *fakeSourceAlwaysFailsOpen) ModTime(string, string) (time.Time, error) {
+	return time.Time{}, errors.New("nao deve ser chamado (Open falha antes)")
+}
+func (f *fakeSourceAlwaysFailsOpen) Delete(string, string) error {
+	return errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceAlwaysFailsOpen) Close() error { return nil }
+
+func (f *fakeSourceAlwaysFailsOpen) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listCalls
+}
+
+// TestRunNaoRemartelaQuandoDownloadFalha exercita a fiação real (Run), não
+// processFile isolada: prova que uma falha de download persistente pausa o
+// loop em pollRetryBackoff em vez de voltar direto ao topo sem dormir. Sem o
+// guard, 300ms de Run() sem nenhum sleep geram milhares de List() — a
+// asserção <=8 tem margem enorme sobre os ~6 ciclos esperados com backoff de
+// 50ms.
+func TestRunNaoRemartelaQuandoDownloadFalha(t *testing.T) {
+	backoffOriginal := pollRetryBackoff
+	pollRetryBackoff = 50 * time.Millisecond
+	t.Cleanup(func() { pollRetryBackoff = backoffOriginal })
+
+	src := &fakeSourceAlwaysFailsOpen{}
+	p := &Pipeline{
+		SFTPFolder:  "pb",
+		TempDir:     t.TempDir(),
+		WaitingTime: 50 * time.Millisecond,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	p.Run(ctx)
+
+	if calls := src.calls(); calls > 8 {
+		t.Errorf("List() chamado %d vezes em 300ms — sem o guard de backoff, download que sempre falha vira busy-loop sem sleep", calls)
+	}
 }
 
 func (t *trackedReadCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
