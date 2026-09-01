@@ -150,3 +150,32 @@ func TestEnsureConnectedProbePenduradoRespeitaOPrazo(t *testing.T) {
 		t.Fatal("conexao pendurada nao foi descartada apos o timeout do probe")
 	}
 }
+
+// TestEnsureConnectedProbeRaceAgressivo prova o comentario em sftp.go:131-133
+// (a leitura de s.client tem que acontecer sob s.mu, capturada em variavel
+// local antes do "go", nunca dentro da goroutine do probe). Com o timeout do
+// probe encurtado para 1us em vez dos 150ms dos testes acima, a goroutine do
+// probe e o closeLocked() do timeout ficam genuinamente proximos no tempo, e
+// 2000 iteracoes dao ao scheduler chances suficientes de intercalar os dois.
+//
+// P5 (drenagem 01/09/2026): com 150ms de folga (como os testes acima) o -race
+// NUNCA pega — o probe le s.client cedo demais e ja terminou a leitura muito
+// antes do timeout escrever nil, entao mesmo a variante bugada (goroutine lendo
+// s.client direto) passa limpo. So com o timeout no minimo pratico (1us) o
+// -race flagra de verdade: WARNING: DATA RACE, read em sftp.go:137 (dentro do
+// go func do probe) vs write anterior em sftp.go:226 (closeLocked, dentro do
+// EnsureConnected que disparou o timeout) — e a corrida real derruba o
+// processo com nil pointer dereference em Client.nextID quando o ganhador da
+// corrida e' a escrita. Confirmado: 5/5 execucoes RED com a mutacao (goroutine
+// lendo s.client direto) e 5/5 execucoes verdes com o codigo original (cli
+// capturado sob o lock) — ver relatorio da tarefa P5.
+func TestEnsureConnectedProbeRaceAgressivo(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		func() {
+			encurtaProbe(t, 1*time.Microsecond)
+			s := sourceComClientPendurado(t)
+			defer s.Close()
+			_ = s.EnsureConnected()
+		}()
+	}
+}
