@@ -238,8 +238,14 @@ func (h *Handler) advancePage(msgID, customID string) (*discordgo.MessageEmbed, 
 
 func (h *Handler) lookup(termo string, limit int) ([]storage.ScreenshotRecord, error) {
 	termo = strings.TrimSpace(termo)
-	if guidPattern.MatchString(termo) {
-		return h.Store.SearchByGUID(strings.ToLower(termo), limit)
+	// O PunkBuster grava o GUID entre asteriscos no header (parser/pbheader.go),
+	// e o bot exibe o GUID assim mesmo (formatEntries abaixo, sender.go) — então
+	// o usuário pode colar o termo com ou sem os asteriscos. Aparamos as pontas
+	// antes de testar o padrão hex puro, senão a forma exibida nunca casa e cai
+	// (por engano) em SearchByName.
+	semAsteriscos := strings.Trim(termo, "*")
+	if guidPattern.MatchString(semAsteriscos) {
+		return h.Store.SearchByGUID(strings.ToLower(semAsteriscos), limit)
 	}
 	return h.Store.SearchByName(termo, limit)
 }
