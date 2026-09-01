@@ -208,6 +208,37 @@ func TestOnSendResultComFTPDesconectadaNaoPanica(t *testing.T) {
 	}
 }
 
+// TestOnSendResultNomeVazioNaoSequestraNomeDoJogador exercita a fiação real
+// (onSendResult, o método que Enqueue chama via Done — pipeline.go:212), não
+// RecordScreenshot isolada: reproduz o cenário exato medido em produção
+// (01/09/2026) de um GUID cujo primeiro envio tem nome real e o segundo (um
+// header do PunkBuster sem nome) chega depois. Sem o guard em
+// screenshots.go, o /pbss stats passaria a exibir esse jogador em branco.
+func TestOnSendResultNomeVazioNaoSequestraNomeDoJogador(t *testing.T) {
+	src := &fakeSource{}
+	p, store := newTestPipeline(t, src)
+
+	comNome := arquivoLocal(t, "pb000010.png")
+	p.inFlight.Store("pb000010.png", true)
+	p.onSendResult("pb", "pb000010.png", comNome,
+		parser.Info{GUID: "aaaa", PlayerName: "AUTISTA_PH"}, time.Now().UTC(),
+		discord.SendResult{GuildID: "g1", ChannelID: "c1", MessageID: "m1"})
+
+	semNome := arquivoLocal(t, "pb000011.png")
+	p.inFlight.Store("pb000011.png", true)
+	p.onSendResult("pb", "pb000011.png", semNome,
+		parser.Info{GUID: "aaaa", PlayerName: ""}, time.Now().UTC(),
+		discord.SendResult{GuildID: "g1", ChannelID: "c1", MessageID: "m2"})
+
+	stats, err := store.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats falhou: %v", err)
+	}
+	if len(stats.TopPlayers) != 1 || stats.TopPlayers[0].Name != "AUTISTA_PH" {
+		t.Errorf("o nome vazio do segundo envio nao pode sequestrar o nome real, TopPlayers=%+v", stats.TopPlayers)
+	}
+}
+
 // TestPollAliveSemPollNenhum cobre o estado inicial antes do primeiro List():
 // lastPoll ainda em zero não pode ser lido como "vivo agora mesmo".
 func TestPollAliveSemPollNenhum(t *testing.T) {

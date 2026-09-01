@@ -42,12 +42,22 @@ func (s *Store) RecordScreenshot(rec ScreenshotRecord) error {
 		return err
 	}
 
-	_, err = tx.Exec(`
-		INSERT INTO player_names (guid, name, last_seen) VALUES (?, ?, ?)
-		ON CONFLICT(guid, name) DO UPDATE SET last_seen = excluded.last_seen
-	`, rec.GUID, rec.PlayerName, now)
-	if err != nil {
-		return err
+	// player_names alimenta o nome exibido no /pbss stats (GetStats escolhe o
+	// de last_seen mais recente). Quando o header do PunkBuster vem sem nome
+	// (parser.Extract devolve PlayerName vazio sem marcar Empty — caso
+	// diferente do GUID ausente), gravar aqui sequestraria o nome real do
+	// jogador: o próximo screenshot vazio do mesmo GUID venceria por
+	// last_seen e o stats passaria a exibir em branco um jogador conhecido.
+	// A linha em screenshots (abaixo) continua fiel ao header mesmo assim —
+	// só o índice de nomes ignora o vazio.
+	if rec.PlayerName != "" {
+		_, err = tx.Exec(`
+			INSERT INTO player_names (guid, name, last_seen) VALUES (?, ?, ?)
+			ON CONFLICT(guid, name) DO UPDATE SET last_seen = excluded.last_seen
+		`, rec.GUID, rec.PlayerName, now)
+		if err != nil {
+			return err
+		}
 	}
 
 	_, err = tx.Exec(`
