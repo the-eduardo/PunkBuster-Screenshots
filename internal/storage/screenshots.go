@@ -71,12 +71,17 @@ func (s *Store) RecordScreenshot(rec ScreenshotRecord) error {
 	return tx.Commit()
 }
 
-// SearchByGUID retorna os screenshots mais recentes de um GUID exato.
+// SearchByGUID retorna os screenshots mais recentes de um GUID exato. O
+// PunkBuster grava o GUID entre asteriscos no header (parser/pbheader.go
+// copia parts[0] cru), então a esmagadora maioria das linhas em produção tem
+// guid = "*<32 hex>*" — o IN casa esse formato e também o hex puro (usado
+// pelas fixtures de teste existentes), sem exigir migração de dado nem perder
+// o índice idx_screenshots_guid (ambos os ramos do IN usam guid=?).
 func (s *Store) SearchByGUID(guid string, limit int) ([]ScreenshotRecord, error) {
 	return s.query(`
 		SELECT id, guid, player_name, filename, captured_at, received_at, server, discord_guild_id, discord_channel_id, discord_message_id
-		FROM screenshots WHERE guid = ? ORDER BY received_at DESC LIMIT ?
-	`, guid, limit)
+		FROM screenshots WHERE guid IN (?, '*' || ? || '*') ORDER BY received_at DESC LIMIT ?
+	`, guid, guid, limit)
 }
 
 // SearchByName retorna os screenshots mais recentes de jogadores cujo nome contém `name`.
