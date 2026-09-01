@@ -150,3 +150,47 @@ func TestEnsureConnectedProbePenduradoRespeitaOPrazo(t *testing.T) {
 		t.Fatal("conexao pendurada nao foi descartada apos o timeout do probe")
 	}
 }
+
+// TestEnsureConnectedProbeRaceAgressivo prova o comentario em sftp.go:131-133
+// (a leitura de s.client tem que acontecer sob s.mu, capturada em variavel
+// local antes do "go", nunca dentro da goroutine do probe). Com o timeout do
+// probe encurtado para 1us em vez dos 150ms dos testes acima, a goroutine do
+// probe e o closeLocked() do timeout ficam genuinamente proximos no tempo, e
+// 2000 iteracoes dao ao scheduler chances suficientes de intercalar os dois.
+//
+// P5 (drenagem 01/09/2026): com 150ms de folga (como os testes acima) o -race
+// NUNCA pega — o probe le s.client cedo demais e ja terminou a leitura muito
+// antes do timeout escrever nil, entao mesmo a variante bugada (goroutine lendo
+// s.client direto) passa limpo. So com o timeout no minimo pratico (1us) o
+// -race flagra de verdade: WARNING: DATA RACE, read em sftp.go:137 (dentro do
+// go func do probe) vs write anterior em sftp.go:226 (closeLocked, dentro do
+// EnsureConnected que disparou o timeout) — e a corrida real derruba o
+// processo com nil pointer dereference em Client.nextID quando o ganhador da
+// corrida e' a escrita.
+//
+// CORRECAO do gate nº2 (01/09/2026) -- a afirmacao anterior de "5/5 RED com
+// -race" era falsa por medicao (amostra de 5). Medido com 15 e 30 execucoes:
+//
+//	com a mutacao, COM -race    : 13 RED / 15  -> ~13% de FALSO-VERDE
+//	com a mutacao, SEM -race    : 30 RED / 30  -> sempre, por panic
+//	                              (nil pointer dereference em sftp.go:135)
+//	codigo correto, com -race   : 15/15 verde
+//	codigo correto, sem -race   : 20/20 verde
+//	codigo correto, GOMAXPROCS=1: 10/10 verde   -> 0 falso-vermelho em 45
+//
+// Ou seja: este teste E' um guarda legitimo, mas quem pega a regressao e' o
+// PANIC, nao o -race. Isso importa para o proximo mantenedor: rodar
+// `-race -count=5` e ver verde NAO significa que a guarda morreu. A suite
+// padrao da casa (go test ./...) roda SEM -race e pega 30/30.
+// Confirmado tambem: 5/5 execucoes verdes com o codigo original (cli
+// capturado sob o lock) — ver relatorio da tarefa P5.
+func TestEnsureConnectedProbeRaceAgressivo(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		func() {
+			encurtaProbe(t, 1*time.Microsecond)
+			s := sourceComClientPendurado(t)
+			defer s.Close()
+			_ = s.EnsureConnected()
+		}()
+	}
+}
