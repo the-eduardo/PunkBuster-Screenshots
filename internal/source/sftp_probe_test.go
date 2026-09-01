@@ -166,8 +166,23 @@ func TestEnsureConnectedProbePenduradoRespeitaOPrazo(t *testing.T) {
 // go func do probe) vs write anterior em sftp.go:226 (closeLocked, dentro do
 // EnsureConnected que disparou o timeout) — e a corrida real derruba o
 // processo com nil pointer dereference em Client.nextID quando o ganhador da
-// corrida e' a escrita. Confirmado: 5/5 execucoes RED com a mutacao (goroutine
-// lendo s.client direto) e 5/5 execucoes verdes com o codigo original (cli
+// corrida e' a escrita.
+//
+// CORRECAO do gate nº2 (01/09/2026) -- a afirmacao anterior de "5/5 RED com
+// -race" era falsa por medicao (amostra de 5). Medido com 15 e 30 execucoes:
+//
+//	com a mutacao, COM -race    : 13 RED / 15  -> ~13% de FALSO-VERDE
+//	com a mutacao, SEM -race    : 30 RED / 30  -> sempre, por panic
+//	                              (nil pointer dereference em sftp.go:135)
+//	codigo correto, com -race   : 15/15 verde
+//	codigo correto, sem -race   : 20/20 verde
+//	codigo correto, GOMAXPROCS=1: 10/10 verde   -> 0 falso-vermelho em 45
+//
+// Ou seja: este teste E' um guarda legitimo, mas quem pega a regressao e' o
+// PANIC, nao o -race. Isso importa para o proximo mantenedor: rodar
+// `-race -count=5` e ver verde NAO significa que a guarda morreu. A suite
+// padrao da casa (go test ./...) roda SEM -race e pega 30/30.
+// Confirmado tambem: 5/5 execucoes verdes com o codigo original (cli
 // capturado sob o lock) — ver relatorio da tarefa P5.
 func TestEnsureConnectedProbeRaceAgressivo(t *testing.T) {
 	for i := 0; i < 2000; i++ {
