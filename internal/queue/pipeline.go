@@ -90,7 +90,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		}
 		p.lastPoll.Store(time.Now().Unix())
 
-		pending := 0
+		pending, failed := 0, 0
 		for _, f := range files {
 			if !f.IsScreenshot() {
 				continue
@@ -98,17 +98,39 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			if _, alreadyQueued := p.inFlight.LoadOrStore(f.Name, struct{}{}); alreadyQueued {
 				continue // já baixado/enfileirado numa passada anterior, aguardando confirmação
 			}
-			pending++
-			p.processFile(f)
+			if p.processFile(f) {
+				pending++
+			} else {
+				failed++
+			}
 		}
 
-		if pending == 0 {
+		switch {
+		case pending > 0:
+			// Backlog real enfileirado: volta imediato pro topo do loop pra checar
+			// se chegaram mais arquivos durante o processamento, sem esperar
+			// WaitingTime — comportamento inalterado por esta correção.
+		case failed > 0:
+			// processFile falhou pra todo mundo que tentou (Open/Create/Copy/
+			// ReadFile — ver os returns dentro dela). Sem essa pausa, o loop volta
+			// direto ao topo sem dormir, reencontra o mesmo arquivo (o inFlight já
+			// foi liberado pelo defer de processFile) e falha de novo: busy-loop
+			// martelando a origem remota sem sleep nenhum. Se a causa for
+			// transitória, 30s já resolve; se for permanente, ao menos não trava
+			// a CPU nem enche o log em rajada.
+			sleepOrDone(ctx, pollRetryBackoff)
+		default:
 			sleepOrDone(ctx, p.WaitingTime)
 		}
-		// Se havia arquivos, volta imediatamente pro topo do loop pra checar se
-		// chegaram mais durante o processamento (sem esperar WaitingTime).
 	}
 }
+
+// pollRetryBackoff é a pausa aplicada quando processFile falha para todo
+// arquivo pendente do ciclo (busy-loop guard). Var (não const) seguindo o
+// mesmo padrão já aceito em pollStaleGrace/sftpProbeTimeout/janitorInterval,
+// e espelha os 30s literais que EnsureConnected/List já usam em seus ramos
+// de erro (não mexidos aqui — escopo mínimo).
+var pollRetryBackoff = 30 * time.Second
 
 // pollStaleGrace e' a folga POR CIMA do ciclo de poll (WaitingTime) que o
 // PollAlive tolera antes de considerar o poller morto. 15min por decisao do
@@ -142,7 +164,10 @@ func (p *Pipeline) PollAlive() bool {
 	return time.Since(time.Unix(last, 0)) < p.pollStaleAfter()
 }
 
-func (p *Pipeline) processFile(f source.FileInfo) {
+// processFile devolve true se o arquivo foi enfileirado com sucesso pro
+// Sender, false em qualquer uma das 4 falhas de I/O (Open/Create/Copy/
+// ReadFile) — o retorno alimenta o guard de busy-loop em Run().
+func (p *Pipeline) processFile(f source.FileInfo) bool {
 	localPath := filepath.Join(p.TempDir, f.Name)
 
 	// Libera a entrada de inFlight se sairmos antes de enfileirar com sucesso
@@ -169,21 +194,21 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 	remote, err := p.Src.Open(p.SFTPFolder, f.Name)
 	if err != nil {
 		slog.Error("não foi possível abrir arquivo remoto", "arquivo", f.Name, "erro", err)
-		return
+		return false
 	}
 	defer remote.Close()
 
 	local, err := os.Create(localPath)
 	if err != nil {
 		slog.Error("não foi possível criar arquivo local", "arquivo", localPath, "erro", err)
-		return
+		return false
 	}
 
 	if _, err := io.Copy(local, remote); err != nil {
 		local.Close()
 		os.Remove(localPath)
 		slog.Error("falha ao baixar arquivo", "arquivo", f.Name, "erro", err)
-		return
+		return false
 	}
 	local.Close()
 	remote.Close() // fecha o handle de dados antes de qualquer novo comando na conexão de controle (o defer acima cobre os returns adiantados; Close é idempotente)
@@ -192,7 +217,7 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 	if err != nil {
 		os.Remove(localPath)
 		slog.Error("falha ao reler arquivo local pra extrair GUID", "arquivo", localPath, "erro", err)
-		return
+		return false
 	}
 	info := parser.Extract(data)
 	if info.Empty {
@@ -214,6 +239,7 @@ func (p *Pipeline) processFile(f source.FileInfo) {
 		},
 	})
 	queued = true
+	return true
 }
 
 func (p *Pipeline) onSendResult(dir, name, localPath string, info parser.Info, capturedAt time.Time, res discord.SendResult) {
