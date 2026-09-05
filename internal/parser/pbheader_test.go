@@ -53,3 +53,35 @@ func TestExtract_TruncatedFile(t *testing.T) {
 		t.Fatalf("deveria sinalizar Empty quando o arquivo não tem linhas suficientes")
 	}
 }
+
+// TestExtract_LinhaDeBannerNaoViraGUID reproduz o caso medido em produção
+// (1554 screenshots com GUID decimal de 6-8 dígitos): quando o header do PB
+// vem deslocado, a linha 4 é um banner de servidor, não "GUID Nome" — não
+// pode ser aceita como se fosse um jogador.
+func TestExtract_LinhaDeBannerNaoViraGUID(t *testing.T) {
+	data := fixture("944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp")
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para uma linha de banner, veio GUID=%q nome=%q", info.GUID, info.PlayerName)
+	}
+	if info.GUID != "" {
+		t.Fatalf("GUID deveria vir vazio no caso Empty, veio %q", info.GUID)
+	}
+}
+
+// TestExtract_GUIDComAsteriscos fecha a lacuna de que nenhuma fixture usava a
+// forma real de produção (o pbsvss grava o GUID como *<32 hex>*, 34 chars) —
+// essa lacuna é o que deixou passar o bug do /pbss search corrigido em 01/09.
+func TestExtract_GUIDComAsteriscos(t *testing.T) {
+	data := fixture("*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha")
+	info := Extract(data)
+	if info.Empty {
+		t.Fatalf("não deveria sinalizar Empty para um GUID real com asteriscos")
+	}
+	if info.GUID != "*5416a6f4ea15c7a4782f4bf64dab0182*" {
+		t.Fatalf("GUID incorreto: %q", info.GUID)
+	}
+	if info.PlayerName != "JoseToalha" {
+		t.Fatalf("nome incorreto: %q", info.PlayerName)
+	}
+}
