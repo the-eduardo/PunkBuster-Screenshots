@@ -4,6 +4,7 @@ package commands
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,6 +18,17 @@ import (
 var guidPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
 const pageSize = 5
+
+// embedDescBudget é o teto que formatEntries respeita ao montar a descrição
+// do /pbss last, com margem sob o limite real do Discord (4096 chars) pra
+// caber o aviso de omissão. Medido em produção: a pior janela real de 20
+// linhas consecutivas chega a 4014/4096 — sem esse teto, o primeiro /pbss
+// last com nomes longos estoura o limite e o Discord rejeita a resposta
+// (silenciosamente, ver respondEphemeral). Clampar por bytes (len) é
+// deliberadamente conservador: o Discord conta unidades UTF-16 e nomes do PB
+// têm char não-ASCII, então byte-count sempre superestima — erra pro lado
+// seguro, nunca pro estouro.
+const embedDescBudget = 3950
 
 type searchState struct {
 	query     string
@@ -151,12 +163,18 @@ func (h *Handler) runLast(s *discordgo.Session, i *discordgo.InteractionCreate, 
 		return
 	}
 
-	embed := &discordgo.MessageEmbed{
+	embed := buildLastEmbed(termo, results)
+	h.respondEphemeral(s, i, "", []*discordgo.MessageEmbed{embed}, nil)
+}
+
+// buildLastEmbed é o recorte de runLast que monta o embed — separado só pra
+// caber num teste sem precisar de *discordgo.Session.
+func buildLastEmbed(termo string, results []storage.ScreenshotRecord) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("Últimos %d screenshots — %s", len(results), termo),
 		Description: formatEntries(results),
 		Color:       0x5865F2,
 	}
-	h.respondEphemeral(s, i, "", []*discordgo.MessageEmbed{embed}, nil)
 }
 
 func (h *Handler) runStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -283,7 +301,7 @@ func renderPage(state *searchState) (*discordgo.MessageEmbed, []discordgo.Messag
 
 func formatEntries(entries []storage.ScreenshotRecord) string {
 	var b strings.Builder
-	for _, e := range entries {
+	for idx, e := range entries {
 		captured := "desconhecida"
 		if !e.CapturedAt.IsZero() {
 			captured = e.CapturedAt.Format("2006-01-02 15:04:05")
@@ -293,7 +311,12 @@ func formatEntries(entries []storage.ScreenshotRecord) string {
 			link = fmt.Sprintf(" — [ver no Discord](https://discord.com/channels/%s/%s/%s)",
 				e.DiscordGuildID, e.DiscordChannelID, e.DiscordMessageID)
 		}
-		fmt.Fprintf(&b, "**%s** (`%s`) — %s%s\n", e.PlayerName, e.GUID, captured, link)
+		linha := fmt.Sprintf("**%s** (`%s`) — %s%s\n", e.PlayerName, e.GUID, captured, link)
+		if b.Len()+len(linha) > embedDescBudget {
+			fmt.Fprintf(&b, "_… %d resultado(s) omitido(s) (limite do Discord)_", len(entries)-idx)
+			break
+		}
+		b.WriteString(linha)
 	}
 	if b.Len() == 0 {
 		return "_nenhum resultado nesta página_"
@@ -302,7 +325,7 @@ func formatEntries(entries []storage.ScreenshotRecord) string {
 }
 
 func (h *Handler) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content:    content,
@@ -311,6 +334,12 @@ func (h *Handler) respondEphemeral(s *discordgo.Session, i *discordgo.Interactio
 			Flags:      discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err != nil {
+		// Sem isto a resposta rejeitada pelo Discord (ex.: outro limite estourado
+		// além do que embedDescBudget cobre) é silenciosa: o usuário só vê "The
+		// application did not respond" e o log fica limpo.
+		slog.Error("falha ao responder interacao", "erro", err)
+	}
 }
 
 func (h *Handler) respondError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
