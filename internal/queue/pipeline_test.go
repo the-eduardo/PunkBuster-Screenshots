@@ -1,9 +1,11 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -617,5 +619,72 @@ func TestProcessFileNaoEmiteComandoComHandleAberto(t *testing.T) {
 	}
 	if src.aberto {
 		t.Errorf("handle remoto deveria estar fechado apos processFile retornar")
+	}
+}
+
+// fakeSourceContent serve um conteúdo fixo de arquivo via Open, pra exercitar
+// o caminho de parsing de processFile com um header específico.
+type fakeSourceContent struct {
+	data []byte
+}
+
+func (f *fakeSourceContent) EnsureConnected() error { return nil }
+func (f *fakeSourceContent) List(string) ([]source.FileInfo, error) {
+	return nil, errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceContent) Open(string, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(string(f.data))), nil
+}
+func (f *fakeSourceContent) ModTime(string, string) (time.Time, error) {
+	return time.Time{}, errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceContent) Delete(string, string) error { return errors.New("nao deve ser chamado") }
+func (f *fakeSourceContent) Close() error                { return nil }
+
+// TestProcessFileBannerDeServidorNaoViraGUID exercita a fiação real
+// (processFile, pipeline.go:170) com um header cuja linha 4 é um banner de
+// servidor (medido em produção: 1554 screenshots com GUID decimal de 6-8
+// dígitos) — não a função parser.Extract isolada. Prova que o guard novo do
+// parser (Empty=true para a linha de banner) chega até o mesmo tratamento já
+// testado para GUID ausente (pipeline.go:223-227): o WARN "sem GUID" dispara,
+// e ele só dispara nesse ramo — as duas linhas seguintes (GUID="unknown",
+// PlayerName="(sem GUID)") são incondicionais dentro do mesmo bloco, então o
+// WARN é um proxy fiel de que a atribuição de jogador foi descartada. A
+// mutação que derruba este teste é remover o guard do parser (volta a aceitar
+// "944369 ..." como GUID): o WARN não dispara e o teste falha.
+func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
+	dir := t.TempDir()
+	header := strings.Join([]string{
+		"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+	}, "\n") + "\n"
+	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+	src := &fakeSourceContent{data: data}
+
+	buf := &bytes.Buffer{}
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	p := &Pipeline{
+		ServerLabel: "servidor-de-teste",
+		SFTPFolder:  "pb",
+		TempDir:     dir,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	f := source.FileInfo{Name: "pb999099.png", Size: int64(len(data)), ModTime: time.Now()}
+	p.inFlight.Store(f.Name, struct{}{})
+	if ok := p.processFile(f); !ok {
+		t.Fatalf("processFile deveria ter enfileirado o arquivo com sucesso")
+	}
+
+	logado := buf.String()
+	if !strings.Contains(logado, "cabeçalho do screenshot veio sem GUID") {
+		t.Fatalf("esperava WARN de header sem atribuicao de jogador para a linha de banner, log: %q", logado)
+	}
+	if _, aindaEmVoo := p.inFlight.Load(f.Name); !aindaEmVoo {
+		t.Errorf("inFlight nao deveria ter sido liberado: processFile so libera em falha, e este enfileirou com sucesso")
 	}
 }
