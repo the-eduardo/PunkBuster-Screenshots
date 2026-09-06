@@ -1,9 +1,12 @@
 services:
   server1:
+    # limite dimensionado sobre o RSS medido: RSS 12M; baixa screenshots do PunkBuster
+    mem_limit: 256m
+    pids_limit: 128
     build:
       dockerfile: Dockerfile
     container_name: duck_pbss
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -24,7 +27,7 @@ services:
 #    build:
 #      dockerfile: Dockerfile
 #    container_name: servername2_pbss
-#    restart: always
+#    restart: unless-stopped
 #    env_file:
 #      - .env.server2
 #    environment:
