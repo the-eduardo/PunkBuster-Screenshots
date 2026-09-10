@@ -85,6 +85,18 @@ func (h *Handler) Register(s *discordgo.Session, guildID string) error {
 	return err
 }
 
+// respond é o único ponto do pacote que chama s.InteractionRespond
+// diretamente: toda rejeição do Discord (limite, 4xx, rede) vira slog.Error
+// em vez de sumir em silêncio — o usuário só veria "The application did not
+// respond" sem nada no log pra investigar depois.
+func respond(s *discordgo.Session, i *discordgo.InteractionCreate, resp *discordgo.InteractionResponse) error {
+	err := s.InteractionRespond(i.Interaction, resp)
+	if err != nil {
+		slog.Error("falha ao responder interacao", "erro", err, "tipo", i.Type)
+	}
+	return err
+}
+
 // HandleInteraction roteia comandos e cliques de botão de paginação.
 func (h *Handler) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
@@ -132,7 +144,7 @@ func (h *Handler) runSearch(s *discordgo.Session, i *discordgo.InteractionCreate
 	state := &searchState{query: termo, results: results, page: 0, createdAt: time.Now()}
 	embed, components := renderPage(state)
 
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err = respond(s, i, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds:     []*discordgo.MessageEmbed{embed},
@@ -145,11 +157,13 @@ func (h *Handler) runSearch(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 
 	msg, err := s.InteractionResponse(i.Interaction)
-	if err == nil {
-		h.mu.Lock()
-		h.states[msg.ID] = state
-		h.mu.Unlock()
+	if err != nil {
+		slog.Warn("resposta enviada mas sem ID da mensagem; paginacao desta busca ficara indisponivel", "erro", err)
+		return
 	}
+	h.mu.Lock()
+	h.states[msg.ID] = state
+	h.mu.Unlock()
 }
 
 func (h *Handler) runLast(s *discordgo.Session, i *discordgo.InteractionCreate, termo string, qty int) {
@@ -212,14 +226,14 @@ func (h *Handler) handleComponent(s *discordgo.Session, i *discordgo.Interaction
 
 	embed, components, ok := h.advancePage(i.Message.ID, data.CustomID)
 	if !ok {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		respond(s, i, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{Content: "Essa busca expirou, rode o comando de novo.", Embeds: nil, Components: nil},
 		})
 		return
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	respond(s, i, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: components},
 	})
@@ -325,7 +339,7 @@ func formatEntries(entries []storage.ScreenshotRecord) string {
 }
 
 func (h *Handler) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) {
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	respond(s, i, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content:    content,
@@ -334,12 +348,6 @@ func (h *Handler) respondEphemeral(s *discordgo.Session, i *discordgo.Interactio
 			Flags:      discordgo.MessageFlagsEphemeral,
 		},
 	})
-	if err != nil {
-		// Sem isto a resposta rejeitada pelo Discord (ex.: outro limite estourado
-		// além do que embedDescBudget cobre) é silenciosa: o usuário só vê "The
-		// application did not respond" e o log fica limpo.
-		slog.Error("falha ao responder interacao", "erro", err)
-	}
 }
 
 func (h *Handler) respondError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
