@@ -27,6 +27,23 @@ type Info struct {
 	// bug ocasional do próprio PunkBuster, não uma mudança de formato. O
 	// screenshot ainda deve ser enviado ao Discord, só sem atribuição de jogador.
 	Empty bool
+	// RawLine é o conteúdo bruto da linha 4, truncado a 64 bytes, preenchido
+	// SÓ quando Empty é true por a linha não casar o guidPattern (header
+	// deslocado / banner de servidor). Vazio significa linha 4 vazia ou
+	// arquivo com menos de 5 linhas — o arquivo local já foi apagado quando o
+	// WARN é lido, então é agora ou nunca pra diagnosticar a causa.
+	RawLine string
+}
+
+// rawSnippetMaxBytes é o teto de bytes de RawLine — o suficiente pra
+// identificar o header sem arriscar carregar dado binário de imagem pro log.
+const rawSnippetMaxBytes = 64
+
+func rawSnippet(b []byte) string {
+	if len(b) > rawSnippetMaxBytes {
+		b = b[:rawSnippetMaxBytes]
+	}
+	return string(b)
 }
 
 // Extract lê a linha fixa do cabeçalho onde o PunkBuster grava "GUID Nome".
@@ -43,7 +60,7 @@ func Extract(data []byte) Info {
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true}
+		return Info{Empty: true, RawLine: rawSnippet(line)}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {

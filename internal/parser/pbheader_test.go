@@ -69,6 +69,66 @@ func TestExtract_LinhaDeBannerNaoViraGUID(t *testing.T) {
 	}
 }
 
+// TestExtract_RawLineNoHeaderDeBanner prova que a linha crua da linha 4 chega
+// até o WARN via Info.RawLine quando o header vem deslocado — sem ela, o
+// diagnóstico do WARN "sem GUID" (pipeline.go:224) não distingue banner de
+// servidor de linha vazia/arquivo truncado, e o arquivo local já foi apagado
+// quando o log é lido.
+func TestExtract_RawLineNoHeaderDeBanner(t *testing.T) {
+	linha := "944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp" // 64 bytes exatos
+	data := fixture(linha)
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para uma linha de banner")
+	}
+	if info.RawLine != linha {
+		t.Fatalf("RawLine incorreto: %q", info.RawLine)
+	}
+}
+
+// TestExtract_RawLineTruncadaEm64Bytes garante o truncamento: sem ele, uma
+// linha de banner mais longa vazaria pro log sem limite.
+func TestExtract_RawLineTruncadaEm64Bytes(t *testing.T) {
+	linha := strings.Repeat("X", 100) // não casa guidPattern, 100 bytes
+	data := fixture(linha)
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para uma linha que não casa o guidPattern")
+	}
+	if len(info.RawLine) != 64 {
+		t.Fatalf("esperava RawLine truncado em 64 bytes, veio %d: %q", len(info.RawLine), info.RawLine)
+	}
+	if info.RawLine != linha[:64] {
+		t.Fatalf("RawLine truncado incorretamente: %q", info.RawLine)
+	}
+}
+
+// TestExtract_RawLineVazioQuandoLinhaVazia é o caso-guarda: RawLine não deve
+// inventar conteúdo quando a linha 4 já vem vazia.
+func TestExtract_RawLineVazioQuandoLinhaVazia(t *testing.T) {
+	data := fixture("")
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty quando a linha do GUID vem em branco")
+	}
+	if info.RawLine != "" {
+		t.Fatalf("RawLine deveria vir vazio quando a linha 4 é vazia, veio %q", info.RawLine)
+	}
+}
+
+// TestExtract_RawLineVazioQuandoArquivoTruncado é o segundo caso-guarda:
+// arquivo curto demais nem chega a ter uma linha 4 pra extrair.
+func TestExtract_RawLineVazioQuandoArquivoTruncado(t *testing.T) {
+	data := []byte("BF4\nsvss\n")
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty quando o arquivo não tem linhas suficientes")
+	}
+	if info.RawLine != "" {
+		t.Fatalf("RawLine deveria vir vazio quando o arquivo está truncado, veio %q", info.RawLine)
+	}
+}
+
 // TestExtract_GUIDComAsteriscos fecha a lacuna de que nenhuma fixture usava a
 // forma real de produção (o pbsvss grava o GUID como *<32 hex>*, 34 chars) —
 // essa lacuna é o que deixou passar o bug do /pbss search corrigido em 01/09.

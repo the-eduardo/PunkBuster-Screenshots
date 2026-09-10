@@ -684,6 +684,12 @@ func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
 	if !strings.Contains(logado, "cabeçalho do screenshot veio sem GUID") {
 		t.Fatalf("esperava WARN de header sem atribuicao de jogador para a linha de banner, log: %q", logado)
 	}
+	// Prova a fiação de Info.RawLine até o WARN real (não só o campo no struct):
+	// mutação que remove "linha4", info.RawLine de pipeline.go:224 derruba esta
+	// asserção sem afetar o teste de unidade em pbheader_test.go.
+	if !strings.Contains(logado, "linha4=") || !strings.Contains(logado, "131.196.199.123:25220") {
+		t.Fatalf("esperava a linha 4 crua (linha4=...) no WARN, log: %q", logado)
+	}
 	if _, aindaEmVoo := p.inFlight.Load(f.Name); !aindaEmVoo {
 		t.Errorf("inFlight nao deveria ter sido liberado: processFile so libera em falha, e este enfileirou com sucesso")
 	}
