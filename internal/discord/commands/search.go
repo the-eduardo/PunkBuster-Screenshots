@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -85,8 +86,29 @@ func (h *Handler) Register(s *discordgo.Session, guildID string) error {
 	return err
 }
 
-// HandleInteraction roteia comandos e cliques de botão de paginação.
+// HandleInteraction roteia comandos e cliques de botão de paginação. O
+// discordgo não tem recover próprio e despacha cada interação numa goroutine
+// nova (SyncEvents=false em session.go): sem este defer, um panic em
+// qualquer handler (indexação posicional em handleCommand, corrida de
+// paginação em advancePage/renderPage, etc.) mata o processo inteiro em vez
+// de afetar só a interação que o causou.
 func (h *Handler) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		slog.Error("panic no handler de interacao",
+			"panic", r, "tipo", i.Type, "stack", string(debug.Stack()))
+		// Resposta best-effort. O recover aninhado garante que a própria
+		// recuperação nunca vire a causa da morte do processo: um panic
+		// dentro de um defer que já recuperou volta a propagar.
+		func() {
+			defer func() { _ = recover() }()
+			h.respondEphemeral(s, i, "Erro interno ao processar o comando. Tente de novo em instantes.", nil, nil)
+		}()
+	}()
+
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		h.handleCommand(s, i)

@@ -81,3 +81,46 @@ func TestRespondEphemeralLogaFalhaDaInteracao(t *testing.T) {
 		t.Fatalf("esperava log de erro ao falhar InteractionRespond, log veio: %q", logBuf.String())
 	}
 }
+
+// TestHandleInteractionRecuperaDePanicNoHandler prova que um panic dentro da
+// árvore de handlers (aqui, indexação sub.Options[0] em handleCommand com um
+// payload malformado — sem a opção obrigatória "termo") não mata o processo:
+// HandleInteraction recupera, loga com stack e responde de forma best-effort.
+// Mutação: remover o defer/recover de HandleInteraction faz o panic subir e
+// abortar o binário de teste (pacote inteiro fica FAIL). Segunda mutação:
+// trocar o corpo do recover por "_ = recover()" faz este teste falhar na
+// asserção da mensagem de log.
+func TestHandleInteractionRecuperaDePanicNoHandler(t *testing.T) {
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	session, err := discordgo.New("Bot faketoken")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client.Transport = erroDeRedeTransport{}
+
+	h := &Handler{states: make(map[string]*searchState)}
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		ID:    "1",
+		Token: "tok-fake",
+		Type:  discordgo.InteractionApplicationCommand,
+		Data: discordgo.ApplicationCommandInteractionData{
+			Name: "pbss",
+			Options: []*discordgo.ApplicationCommandInteractionDataOption{
+				{Name: "search", Options: nil}, // sem a opcao obrigatoria "termo"
+			},
+		},
+	}}
+
+	h.HandleInteraction(session, i) // sem o fix, sub.Options[0] em handleCommand panica aqui
+
+	if !strings.Contains(logBuf.String(), "panic no handler de interacao") {
+		t.Fatalf("esperava log de panic recuperado, log veio: %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "index out of range") {
+		t.Fatalf("esperava o valor original do panic preservado no log, log veio: %q", logBuf.String())
+	}
+}
