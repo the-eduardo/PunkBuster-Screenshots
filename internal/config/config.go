@@ -64,7 +64,11 @@ func Load() (*Config, error) {
 
 	cfg.SelectFTPMode = strings.ToLower(get("SELECT_FTP_MODE"))
 	if cfg.SelectFTPMode != "sftp" && cfg.SelectFTPMode != "ftp" {
-		cfg.SelectFTPMode = "ftp"
+		return nil, fmt.Errorf(
+			"SELECT_FTP_MODE=%q invalido: use \"sftp\" ou \"ftp\". "+
+				"Sem isso o bot cairia em FTP puro, enviando a senha em texto claro "+
+				"e pulando a verificacao de SFTP_HOST_KEY",
+			cfg.SelectFTPMode)
 	}
 
 	// Verificacao da identidade do servidor sFTP. Falha fechado: sem a chave, o

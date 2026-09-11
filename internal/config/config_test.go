@@ -12,12 +12,13 @@ import (
 func setRequiredEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
-		"SERVER":      "example.com",
-		"USER":        "user",
-		"PASS":        "pass",
-		"SFTP_FOLDER": "/folder",
-		"BOT_TOKEN":   "token",
-		"CHANNEL_ID":  "123",
+		"SERVER":          "example.com",
+		"USER":            "user",
+		"PASS":            "pass",
+		"SFTP_FOLDER":     "/folder",
+		"BOT_TOKEN":       "token",
+		"CHANNEL_ID":      "123",
+		"SELECT_FTP_MODE": "ftp",
 	}
 	for k, v := range base {
 		if ov, ok := overrides[k]; ok {
@@ -79,18 +80,50 @@ func TestLoad_SFTPModeComInsecureBypassPassa(t *testing.T) {
 	}
 }
 
-func TestLoad_SelectFTPModeDefaultParaFTP(t *testing.T) {
+func TestLoad_SelectFTPModeDesconhecidoFalha(t *testing.T) {
 	cases := []string{"", "invalido", "SFTP_TYPO"}
 	for _, mode := range cases {
 		mode := mode
 		t.Run("mode="+mode, func(t *testing.T) {
 			setRequiredEnv(t, map[string]string{"SELECT_FTP_MODE": mode})
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("SELECT_FTP_MODE=%q deveria falhar o boot (fail-closed), mas Load() passou", mode)
+			}
+		})
+	}
+}
+
+// TestLoad_TypoNaoBypassaGuardaDeHostKey e' o teste de fiacao: um typo em
+// SELECT_FTP_MODE nao pode mais degradar silenciosamente para "ftp" e, de
+// quebra, pular a guarda fail-closed de SFTP_HOST_KEY.
+func TestLoad_TypoNaoBypassaGuardaDeHostKey(t *testing.T) {
+	setRequiredEnv(t, map[string]string{
+		"SELECT_FTP_MODE":        "sfpt",
+		"SFTP_HOST_KEY":          "",
+		"SFTP_INSECURE_HOST_KEY": "",
+	})
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("SELECT_FTP_MODE=\"sfpt\" (typo) deveria falhar o boot, nao cair em ftp sem guarda")
+	}
+}
+
+func TestLoad_ModosValidosPassam(t *testing.T) {
+	cases := []string{"sftp", "ftp", "SFTP"}
+	for _, mode := range cases {
+		mode := mode
+		t.Run("mode="+mode, func(t *testing.T) {
+			setRequiredEnv(t, map[string]string{
+				"SELECT_FTP_MODE": mode,
+				"SFTP_HOST_KEY":   "ssh-ed25519 AAAAtest",
+			})
 			cfg, err := Load()
 			if err != nil {
 				t.Fatalf("Load() não deveria falhar com SELECT_FTP_MODE=%q, erro: %v", mode, err)
 			}
-			if cfg.SelectFTPMode != "ftp" {
-				t.Fatalf("SelectFTPMode = %q, esperado default \"ftp\"", cfg.SelectFTPMode)
+			if cfg.SelectFTPMode != strings.ToLower(mode) {
+				t.Fatalf("SelectFTPMode = %q, esperado %q", cfg.SelectFTPMode, strings.ToLower(mode))
 			}
 		})
 	}
