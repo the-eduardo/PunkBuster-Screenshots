@@ -5,6 +5,7 @@ package parser
 import (
 	"bytes"
 	"regexp"
+	"unicode/utf8"
 )
 
 // guidLineIndex é a linha (0-based) onde o pbsvss sempre grava "GUID NomeDoJogador"
@@ -27,6 +28,38 @@ type Info struct {
 	// bug ocasional do próprio PunkBuster, não uma mudança de formato. O
 	// screenshot ainda deve ser enviado ao Discord, só sem atribuição de jogador.
 	Empty bool
+	// RawLine é o conteúdo bruto da linha 4, truncado a 64 bytes, preenchido
+	// SÓ quando Empty é true por a linha não casar o guidPattern (header
+	// deslocado / banner de servidor). Vazio significa linha 4 vazia ou
+	// arquivo com menos de 5 linhas — o arquivo local já foi apagado quando o
+	// WARN é lido, então é agora ou nunca pra diagnosticar a causa.
+	RawLine string
+}
+
+// rawSnippetMaxBytes é o teto de bytes de RawLine — o suficiente pra
+// identificar o header sem arriscar carregar dado binário de imagem pro log.
+const rawSnippetMaxBytes = 64
+
+// rawSnippet trunca b em até rawSnippetMaxBytes SEM partir um caractere
+// UTF-8 multibyte ao meio (achado do comitê de 12/09/2026: um corte cru em
+// bytes puros pode deixar bytes de continuação inválidos no fim da string,
+// que o encoder de log escapa como \xHH ou U+FFFD — não quebra nada, mas
+// suja o diagnóstico à toa). Anda rune a rune a partir do início e para
+// antes de qualquer rune que ultrapasse o teto; byte realmente inválido
+// (dado binário, não texto) avança 1 byte por vez, igual ao corte cru.
+func rawSnippet(b []byte) string {
+	if len(b) <= rawSnippetMaxBytes {
+		return string(b)
+	}
+	n := 0
+	for n < rawSnippetMaxBytes {
+		_, size := utf8.DecodeRune(b[n:])
+		if n+size > rawSnippetMaxBytes {
+			break
+		}
+		n += size
+	}
+	return string(b[:n])
 }
 
 // Extract lê a linha fixa do cabeçalho onde o PunkBuster grava "GUID Nome".
@@ -43,7 +76,7 @@ func Extract(data []byte) Info {
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true}
+		return Info{Empty: true, RawLine: rawSnippet(line)}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {

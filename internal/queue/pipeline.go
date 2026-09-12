@@ -221,7 +221,7 @@ func (p *Pipeline) processFile(f source.FileInfo) bool {
 	}
 	info := parser.Extract(data)
 	if info.Empty {
-		slog.Warn("cabeçalho do screenshot veio sem GUID (bug conhecido do PunkBuster), enviando sem atribuição de jogador", "arquivo", f.Name)
+		slog.Warn("cabeçalho do screenshot veio sem GUID (bug conhecido do PunkBuster), enviando sem atribuição de jogador", "arquivo", f.Name, "linha4", info.RawLine)
 		info.GUID = "unknown"
 		info.PlayerName = "(sem GUID)"
 	}
