@@ -5,6 +5,7 @@ package parser
 import (
 	"bytes"
 	"regexp"
+	"unicode/utf8"
 )
 
 // guidLineIndex é a linha (0-based) onde o pbsvss sempre grava "GUID NomeDoJogador"
@@ -39,11 +40,26 @@ type Info struct {
 // identificar o header sem arriscar carregar dado binário de imagem pro log.
 const rawSnippetMaxBytes = 64
 
+// rawSnippet trunca b em até rawSnippetMaxBytes SEM partir um caractere
+// UTF-8 multibyte ao meio (achado do comitê de 12/09/2026: um corte cru em
+// bytes puros pode deixar bytes de continuação inválidos no fim da string,
+// que o encoder de log escapa como \xHH ou U+FFFD — não quebra nada, mas
+// suja o diagnóstico à toa). Anda rune a rune a partir do início e para
+// antes de qualquer rune que ultrapasse o teto; byte realmente inválido
+// (dado binário, não texto) avança 1 byte por vez, igual ao corte cru.
 func rawSnippet(b []byte) string {
-	if len(b) > rawSnippetMaxBytes {
-		b = b[:rawSnippetMaxBytes]
+	if len(b) <= rawSnippetMaxBytes {
+		return string(b)
 	}
-	return string(b)
+	n := 0
+	for n < rawSnippetMaxBytes {
+		_, size := utf8.DecodeRune(b[n:])
+		if n+size > rawSnippetMaxBytes {
+			break
+		}
+		n += size
+	}
+	return string(b[:n])
 }
 
 // Extract lê a linha fixa do cabeçalho onde o PunkBuster grava "GUID Nome".

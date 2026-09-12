@@ -3,6 +3,7 @@ package parser
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Fixture baseado no formato real do pbsvss: cabeçalho de texto com o GUID
@@ -100,6 +101,27 @@ func TestExtract_RawLineTruncadaEm64Bytes(t *testing.T) {
 	}
 	if info.RawLine != linha[:64] {
 		t.Fatalf("RawLine truncado incorretamente: %q", info.RawLine)
+	}
+}
+
+// TestExtract_RawLineTruncadaNaoPartCaractereMultibyte é o achado do comitê
+// de 12/09/2026 (Dev Sênior + QA, convergentes): um corte cru em bytes pode
+// partir um "é" (2 bytes UTF-8) bem na fronteira dos 64 bytes, deixando um
+// byte de continuação inválido solto no fim da string. RawLine tem que vir
+// SEMPRE UTF-8 válido, mesmo que isso signifique truncar 1 byte antes do
+// teto.
+func TestExtract_RawLineTruncadaNaoPartCaractereMultibyte(t *testing.T) {
+	linha := strings.Repeat("X", 63) + "é" + strings.Repeat("Y", 20) // "é" cruza o byte 64
+	data := fixture(linha)
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para uma linha que não casa o guidPattern")
+	}
+	if !utf8.ValidString(info.RawLine) {
+		t.Fatalf("RawLine não é UTF-8 válido: %q (bytes: %v)", info.RawLine, []byte(info.RawLine))
+	}
+	if info.RawLine != strings.Repeat("X", 63) {
+		t.Fatalf("esperava truncar ANTES do caractere multibyte partido, veio %q", info.RawLine)
 	}
 }
 
