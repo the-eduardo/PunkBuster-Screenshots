@@ -33,6 +33,22 @@ type Config struct {
 	DebugMode bool
 }
 
+// truncateForErrorMaxBytes é o teto de bytes ecoados de volta numa mensagem
+// de erro de boot para um valor de env var. Achado do comite de AppSec de
+// 12/09/2026: sem limite, alguem que colar por engano um segredo (senha,
+// token) em SELECT_FTP_MODE por troca de campo no compose/.env veria esse
+// segredo inteiro devolvido em texto claro no log de erro do boot.
+const truncateForErrorMaxBytes = 20
+
+// truncateForError trunca s a truncateForErrorMaxBytes bytes pra uso em
+// mensagem de erro, marcando corte com "..." quando trunca.
+func truncateForError(s string) string {
+	if len(s) <= truncateForErrorMaxBytes {
+		return s
+	}
+	return s[:truncateForErrorMaxBytes] + "..."
+}
+
 func Load() (*Config, error) {
 	var cfg Config
 	var missing []string
@@ -64,7 +80,11 @@ func Load() (*Config, error) {
 
 	cfg.SelectFTPMode = strings.ToLower(get("SELECT_FTP_MODE"))
 	if cfg.SelectFTPMode != "sftp" && cfg.SelectFTPMode != "ftp" {
-		cfg.SelectFTPMode = "ftp"
+		return nil, fmt.Errorf(
+			"SELECT_FTP_MODE=%q invalido: use \"sftp\" ou \"ftp\". "+
+				"Sem isso o bot cairia em FTP puro, enviando a senha em texto claro "+
+				"e pulando a verificacao de SFTP_HOST_KEY",
+			truncateForError(cfg.SelectFTPMode))
 	}
 
 	// Verificacao da identidade do servidor sFTP. Falha fechado: sem a chave, o
