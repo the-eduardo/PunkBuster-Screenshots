@@ -113,6 +113,17 @@ class TestSaneamentoPbss(unittest.TestCase):
         self.assertIn((SENTINELA, "(sem GUID)"), names, "nome do sentinela deveria sobreviver")
         self.assertIn((VALID_GUID, "PlayerOne"), names)
 
+    def test_backup_criado_com_permissao_600(self):
+        r = run_script(self.db, apply=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        backups = [f for f in os.listdir(self.tmp) if "bak-saneamento" in f]
+        self.assertEqual(len(backups), 1, "esperava exatamente 1 backup")
+        modo = os.stat(os.path.join(self.tmp, backups[0])).st_mode & 0o777
+        self.assertEqual(
+            modo, 0o600,
+            "backup e' copia completa de dados de jogadores, deveria ser legivel so pelo dono (0600), veio %o" % modo,
+        )
+
     def test_screenshots_nunca_e_tocada(self):
         antes = dump(self.db)["screenshots"]
         run_script(self.db, apply=True)

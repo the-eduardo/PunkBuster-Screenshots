@@ -20,8 +20,14 @@ A tabela `screenshots` nunca e tocada: as linhas com GUID fantasma continuam
 sendo o registro de mensagens ja entregues ao Discord e seguem pesquisaveis
 pelo nome. FK nao e' imposta (sqlite abre sem PRAGMA foreign_keys=ON), entao
 apagar de `players`/`player_names` nao quebra `screenshots`.
+
+O backup (`--apply`) fica no MESMO diretorio do banco, sem rotacao
+automatica — o script nao apaga backups antigos sozinho. Ele e' reexecutavel
+sob demanda (nao um cron), entao a limpeza de `*.bak-saneamento-*` velhos e'
+manual: apague os que nao precisar mais depois de confirmar o resultado.
 """
 import argparse
+import os
 import re
 import sqlite3
 import sys
@@ -48,15 +54,22 @@ def main():
         bak = "%s.bak-saneamento-%s" % (args.db, time.strftime("%Y%m%d%H%M%S"))
         with sqlite3.connect(bak) as dst:
             src.backup(dst)  # copia CONSISTENTE (inclui o WAL) — cp do .db sozinho nao serve
+        os.chmod(bak, 0o600)  # copia completa de dados de jogadores: so o dono le
         print("backup:", bak)
 
     def conta(sql):
         return src.execute(sql).fetchone()[0]
 
+    # shots_antes e fantasmas sao lidos DENTRO da transacao (achado do comite
+    # de 12/09/2026, Dev Senior + QA convergentes): ler antes do BEGIN
+    # IMMEDIATE deixa uma janela onde um INSERT concorrente do bot (que grava
+    # o tempo todo em producao) muda a contagem sem a transacao do script ter
+    # feito nada, disparando o abort de seguranca abaixo por falso-positivo.
+    # BEGIN IMMEDIATE toma o lock de escrita imediatamente; a partir daqui o
+    # snapshot e' o mesmo que a checagem final compara.
+    src.execute("BEGIN IMMEDIATE")
     shots_antes = conta("SELECT count(*) FROM screenshots")
     fantasmas = [(g,) for (g,) in src.execute("SELECT guid FROM players") if eh_fantasma(g)]
-
-    src.execute("BEGIN IMMEDIATE")
     print(
         "antes: nomes vazios=%d  guids fantasma=%d"
         % (conta("SELECT count(*) FROM player_names WHERE name=''"), len(fantasmas))
