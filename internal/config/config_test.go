@@ -94,6 +94,25 @@ func TestLoad_SelectFTPModeDesconhecidoFalha(t *testing.T) {
 	}
 }
 
+// TestLoad_ErroDeFtpModeTruncaValorEcoado e' o ajuste do AppSec (comite de
+// 12/09/2026): se alguem colar um segredo por engano em SELECT_FTP_MODE, a
+// mensagem de erro do fail-closed nao pode devolver o valor inteiro em texto
+// claro no log de boot.
+func TestLoad_ErroDeFtpModeTruncaValorEcoado(t *testing.T) {
+	segredo := "hunter2-token-supersecreto-que-nao-devia-vazar-no-log"
+	setRequiredEnv(t, map[string]string{"SELECT_FTP_MODE": segredo})
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("deveria falhar o boot")
+	}
+	if strings.Contains(err.Error(), segredo) {
+		t.Fatalf("erro ecoou o valor completo de SELECT_FTP_MODE, deveria truncar: %v", err)
+	}
+	if !strings.Contains(err.Error(), segredo[:20]) {
+		t.Fatalf("erro deveria manter um prefixo do valor pra diagnostico, veio: %v", err)
+	}
+}
+
 // TestLoad_TypoNaoBypassaGuardaDeHostKey e' o teste de fiacao: um typo em
 // SELECT_FTP_MODE nao pode mais degradar silenciosamente para "ftp" e, de
 // quebra, pular a guarda fail-closed de SFTP_HOST_KEY.
