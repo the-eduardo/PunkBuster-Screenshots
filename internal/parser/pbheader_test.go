@@ -154,6 +154,64 @@ func TestExtract_RawLineVazioQuandoArquivoTruncado(t *testing.T) {
 // TestExtract_GUIDComAsteriscos fecha a lacuna de que nenhuma fixture usava a
 // forma real de produção (o pbsvss grava o GUID como *<32 hex>*, 34 chars) —
 // essa lacuna é o que deixou passar o bug do /pbss search corrigido em 01/09.
+// TestFindGUIDLine_HeaderDeslocado reproduz o caso do achado de 13/09/2026: a
+// linha 4 é o banner do servidor (header deslocado), mas o GUID aparece
+// intacto na linha seguinte. GUIDLineIndex tem que apontar pra ela, pra medir
+// se o header deslocado ainda tem GUID recuperável em outro lugar.
+func TestFindGUIDLine_HeaderDeslocado(t *testing.T) {
+	linhas := []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+		"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha"}
+	header := strings.Join(linhas, "\n") + "\n"
+	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para a linha de banner")
+	}
+	if info.GUIDLineIndex != 5 {
+		t.Fatalf("esperava GUIDLineIndex=5, veio %d", info.GUIDLineIndex)
+	}
+}
+
+// TestFindGUIDLine_SemGUIDEmLugarNenhum é o par negativo obrigatório: um
+// header deslocado onde NENHUMA linha varrida casa o guidPattern tem que
+// devolver -1, não um índice qualquer.
+func TestFindGUIDLine_SemGUIDEmLugarNenhum(t *testing.T) {
+	data := fixture("944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp")
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para a linha de banner")
+	}
+	if info.GUIDLineIndex != -1 {
+		t.Fatalf("esperava GUIDLineIndex=-1 (nenhuma linha casa), veio %d", info.GUIDLineIndex)
+	}
+}
+
+// TestFindGUIDLine_NaoVarreBinario prova que findGUIDLine não escapa pra além
+// das headerScanLines primeiras linhas: um header curto (banner na linha 4),
+// seguido de linhas de enchimento até saturar o teto de 8, com um hex de 32
+// chars limpo e isolado bem na 9ª linha (índice 8, fora do teto) — só pode
+// ser encontrado se o descarte da fatia saturada FALTAR.
+func TestFindGUIDLine_NaoVarreBinario(t *testing.T) {
+	linhas := []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+		"enchimento1", "enchimento2", "enchimento3"} // 8 linhas = headerScanLines
+	header := strings.Join(linhas, "\n") + "\n"
+	// 9ª linha (índice 8, além do teto): hex limpo, sem nada depois — se
+	// aparecer como parts[headerScanLines] em vez de ser descartado, o
+	// mutante que remove o "lines = parts[:headerScanLines]" o encontra.
+	data := append([]byte(header), []byte("5416a6f4ea15c7a4782f4bf64dab0182")...)
+
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deveria sinalizar Empty para a linha de banner")
+	}
+	if info.GUIDLineIndex != -1 {
+		t.Fatalf("esperava GUIDLineIndex=-1 (hex fica na 9ª linha, além do teto), veio %d", info.GUIDLineIndex)
+	}
+}
+
 func TestExtract_GUIDComAsteriscos(t *testing.T) {
 	data := fixture("*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha")
 	info := Extract(data)
