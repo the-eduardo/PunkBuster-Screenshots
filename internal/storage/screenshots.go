@@ -138,15 +138,29 @@ func (s *Store) GetStats() (Stats, error) {
 		return stats, err
 	}
 
+	// Reescrita por performance (14/09/2026): a versão anterior fazia um SCAN
+	// de screenshots inteiro e, para cada linha, uma subquery correlacionada
+	// em player_names — O(N) na tabela que só cresce. Esta versão é dirigida
+	// por player_names (pequena): agrupa e ordena screenshots via
+	// idx_screenshots_guid e só resolve nome pros 10 GUIDs que sobrevivem.
+	// O `WHERE guid IN (SELECT guid FROM player_names)` preserva a semântica
+	// do JOIN antigo (GUID sem nome nenhum fica de fora) e evita NULL na
+	// subquery de nome, que quebraria o Scan em string.
 	rows, err := s.db.Query(`
-		SELECT s.guid, pn.name, COUNT(*) as c
-		FROM screenshots s
-		JOIN player_names pn ON pn.guid = s.guid AND pn.last_seen = (
-			SELECT MAX(last_seen) FROM player_names WHERE guid = s.guid
+		WITH top AS (
+			SELECT guid, COUNT(*) AS c
+			FROM screenshots
+			WHERE guid IN (SELECT guid FROM player_names)
+			GROUP BY guid
+			ORDER BY c DESC
+			LIMIT 10
 		)
-		GROUP BY s.guid
-		ORDER BY c DESC
-		LIMIT 10
+		SELECT t.guid,
+		       (SELECT name FROM player_names WHERE guid = t.guid
+		          ORDER BY last_seen DESC LIMIT 1) AS name,
+		       t.c
+		FROM top t
+		ORDER BY t.c DESC
 	`)
 	if err != nil {
 		return stats, err
