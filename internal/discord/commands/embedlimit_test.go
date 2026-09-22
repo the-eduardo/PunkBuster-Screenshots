@@ -109,3 +109,70 @@ func TestClampContentNaoParteRune(t *testing.T) {
 		t.Fatalf("clampContent partiu um caractere UTF-8 no meio: %q", got)
 	}
 }
+
+// TestBuildStatsEmbedClampaNoLimiteDoCampo reproduz o pior caso plausível do
+// bloco "Top 10 mais flagrados": nomes de 73 chars (o maior visto no banco de
+// produção) e GUID gravado com asteriscos (34 chars). Sem clamp, o field.Value
+// passa longe do limite de 1024 do Discord e InteractionRespond devolveria
+// HTTP 400 — silenciosamente, pela invariante de respond(). A mutação que
+// derruba este teste é remover o guard de embedFieldBudget em
+// formatTopPlayers (volta ao loop original sem teto).
+func TestBuildStatsEmbedClampaNoLimiteDoCampo(t *testing.T) {
+	nomeLongo := strings.Repeat("A", 73)
+	top := make([]storage.TopPlayer, 0, 10)
+	for i := 0; i < 10; i++ {
+		top = append(top, storage.TopPlayer{
+			GUID:  "*5416a6f4ea15c7a4782f4bf64dab0182*",
+			Name:  nomeLongo,
+			Count: 1234,
+		})
+	}
+
+	embed := buildStatsEmbed(storage.Stats{TotalScreenshots: 1, TotalPlayers: 1, TopPlayers: top})
+
+	valor := embed.Fields[2].Value
+	if len(valor) > 1024 {
+		t.Fatalf("field Value estourou o limite do Discord: %d chars", len(valor))
+	}
+	if !strings.Contains(valor, "omitido(s) (limite do Discord)") {
+		t.Fatalf("esperava o aviso de omissao no fim do field, veio: %q", valor)
+	}
+}
+
+// TestBuildStatsEmbedCasoRealFicaIntacto é o par obrigatório do teste acima:
+// os 10 nomes/contagens reais de hoje (796 bytes, bem abaixo do teto) têm de
+// sair byte-a-byte iguais ao formato de hoje, sem aviso de omissão. Formato
+// hardcoded (não derivado de formatTopPlayers): sem isso, um "fix" degenerado
+// que sempre trunca passaria comparando a função contra si mesma.
+func TestBuildStatsEmbedCasoRealFicaIntacto(t *testing.T) {
+	top := []storage.TopPlayer{
+		{GUID: "*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*", Name: "JoseToalha", Count: 42},
+		{GUID: "*bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb*", Name: "AUTISTA_PH", Count: 31},
+		{GUID: "*cccccccccccccccccccccccccccccccc*", Name: "Jogador3", Count: 20},
+	}
+	esperado := "1. **JoseToalha** (`*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*`) — 42 screenshots\n" +
+		"2. **AUTISTA_PH** (`*bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb*`) — 31 screenshots\n" +
+		"3. **Jogador3** (`*cccccccccccccccccccccccccccccccc*`) — 20 screenshots\n"
+
+	embed := buildStatsEmbed(storage.Stats{TotalScreenshots: 93, TotalPlayers: 3, TopPlayers: top})
+
+	valor := embed.Fields[2].Value
+	if valor != esperado {
+		t.Fatalf("clamp alterou o caso comum:\nesperado=%q\nveio=%q", esperado, valor)
+	}
+	if strings.Contains(valor, "omitido") {
+		t.Fatalf("caso comum nao deveria ter aviso de omissao: %q", valor)
+	}
+}
+
+// TestBuildStatsEmbedSemDadosMostraPlaceholder garante que buildStatsEmbed
+// preserva o "_sem dados ainda_" de hoje quando TopPlayers vem vazio — a
+// extração pra formatTopPlayers não pode perder esse caso de borda.
+func TestBuildStatsEmbedSemDadosMostraPlaceholder(t *testing.T) {
+	embed := buildStatsEmbed(storage.Stats{})
+
+	valor := embed.Fields[2].Value
+	if valor != "_sem dados ainda_" {
+		t.Fatalf("esperava placeholder de sem dados, veio: %q", valor)
+	}
+}

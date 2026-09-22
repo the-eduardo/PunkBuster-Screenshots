@@ -55,6 +55,16 @@ func clampContent(s string) string {
 	return s[:cut] + "… (termo truncado)"
 }
 
+// embedFieldBudget é o teto que formatTopPlayers respeita ao montar o field
+// "Top 10 mais flagrados" de /pbss stats, sob o limite de field.value do
+// Discord (1024 chars — não os 4096 da description). O aviso de omissão é
+// ESCRITO DEPOIS do teto ser atingido (mesmo padrão de embedDescBudget), então
+// o budget precisa deixar espaço pro próprio aviso: no pior caso (top10, 2
+// dígitos) ele tem 51 bytes; 950 deixa margem de ~23 bytes sob o limite real.
+// Sem esse teto, ~4 jogadores com nome longo no top10 já estouram o campo e o
+// Discord rejeita a resposta inteira.
+const embedFieldBudget = 950
+
 type searchState struct {
 	query     string
 	isGUID    bool
@@ -244,24 +254,41 @@ func (h *Handler) runStats(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	var top strings.Builder
-	if len(stats.TopPlayers) == 0 {
-		top.WriteString("_sem dados ainda_")
-	}
-	for idx, tp := range stats.TopPlayers {
-		fmt.Fprintf(&top, "%d. **%s** (`%s`) — %d screenshots\n", idx+1, tp.Name, tp.GUID, tp.Count)
-	}
+	embed := buildStatsEmbed(stats)
+	h.respondEphemeral(s, i, "", []*discordgo.MessageEmbed{embed}, nil)
+}
 
-	embed := &discordgo.MessageEmbed{
+// buildStatsEmbed é o recorte de runStats que monta o embed — separado só pra
+// caber num teste sem precisar de *discordgo.Session, mesmo padrão de buildLastEmbed.
+func buildStatsEmbed(stats storage.Stats) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{
 		Title: "Estatísticas do PunkBuster Screenshots",
 		Color: 0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "Total de screenshots", Value: fmt.Sprintf("%d", stats.TotalScreenshots), Inline: true},
 			{Name: "Jogadores distintos flagrados", Value: fmt.Sprintf("%d", stats.TotalPlayers), Inline: true},
-			{Name: "Top 10 mais flagrados", Value: top.String()},
+			{Name: "Top 10 mais flagrados", Value: formatTopPlayers(stats.TopPlayers)},
 		},
 	}
-	h.respondEphemeral(s, i, "", []*discordgo.MessageEmbed{embed}, nil)
+}
+
+// formatTopPlayers monta o bloco "Top 10 mais flagrados" com o mesmo guard de
+// teto que formatEntries usa pra description: o Discord aceita no máximo 1024
+// chars em field.value, e o bloco não tinha nenhum clamp antes desta função.
+func formatTopPlayers(top []storage.TopPlayer) string {
+	var b strings.Builder
+	if len(top) == 0 {
+		return "_sem dados ainda_"
+	}
+	for idx, tp := range top {
+		linha := fmt.Sprintf("%d. **%s** (`%s`) — %d screenshots\n", idx+1, tp.Name, tp.GUID, tp.Count)
+		if b.Len()+len(linha) > embedFieldBudget {
+			fmt.Fprintf(&b, "_… %d jogador(es) omitido(s) (limite do Discord)_", len(top)-idx)
+			break
+		}
+		b.WriteString(linha)
+	}
+	return b.String()
 }
 
 func (h *Handler) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
