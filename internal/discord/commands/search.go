@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -30,6 +31,29 @@ const pageSize = 5
 // têm char não-ASCII, então byte-count sempre superestima — erra pro lado
 // seguro, nunca pro estouro.
 const embedDescBudget = 3950
+
+// contentBudget é o teto que respondEphemeral respeita no Content, com
+// margem sob o limite real do Discord (2000) pra caber o aviso de corte. A
+// option "termo" do /pbss não define MaxLength, então o Discord aceita até
+// 6000 chars — e um termo longo nunca casa em nenhum LIKE (o maior
+// player_name em produção tem 73 chars), então cai sempre no ramo "nenhum
+// resultado", ecoando o termo cru no Content. Contar bytes é a mesma escolha
+// conservadora do embedDescBudget acima: erra pro lado seguro.
+const contentBudget = 1900
+
+// clampContent trunca no contentBudget recuando até a fronteira de rune, pra
+// nunca partir um caractere UTF-8 no meio (mesmo cuidado do
+// rawSnippetMaxBytes em parser/pbheader.go).
+func clampContent(s string) string {
+	if len(s) <= contentBudget {
+		return s
+	}
+	cut := contentBudget
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "… (termo truncado)"
+}
 
 type searchState struct {
 	query     string
@@ -364,7 +388,7 @@ func (h *Handler) respondEphemeral(s *discordgo.Session, i *discordgo.Interactio
 	respond(s, i, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:    content,
+			Content:    clampContent(content),
 			Embeds:     embeds,
 			Components: components,
 			Flags:      discordgo.MessageFlagsEphemeral,

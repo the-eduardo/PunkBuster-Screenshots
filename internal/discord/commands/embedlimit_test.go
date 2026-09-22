@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"pbss/internal/storage"
 )
@@ -64,5 +65,47 @@ func TestBuildLastEmbedCasoComumFicaIdenticoAoFormatoDeHoje(t *testing.T) {
 	}
 	if strings.Contains(embed.Description, "omitido") {
 		t.Fatalf("caso comum nao deveria ter aviso de omissao: %q", embed.Description)
+	}
+}
+
+// TestClampContentRespeitaOTetoDoDiscord prova o defeito medido em produção
+// (19/09/2026): a option "termo" do /pbss não define MaxLength (Discord
+// aceita até 6000 chars), e um termo longo é ecoado cru no Content das
+// respostas de "nenhum resultado" — que tem teto real de 2000. Sem clamp, o
+// Discord rejeita a resposta com HTTP 400 e a interação morre.
+func TestClampContentRespeitaOTetoDoDiscord(t *testing.T) {
+	termoLongo := strings.Repeat("a", 3000)
+	got := clampContent(termoLongo)
+	if len(got) > 2000 {
+		t.Fatalf("clampContent nao respeitou o teto de 2000 do Discord: %d chars", len(got))
+	}
+	if !strings.Contains(got, "termo truncado") {
+		t.Fatalf("esperava o aviso de truncamento, veio: %q", got)
+	}
+}
+
+// TestClampContentNaoMexeNoCasoComum é o par obrigatório do teste acima: sem
+// ele, um clamp degenerado que sempre trunca passaria despercebido.
+func TestClampContentNaoMexeNoCasoComum(t *testing.T) {
+	comum := "Nenhum screenshot encontrado para **Duck**."
+	got := clampContent(comum)
+	if got != comum {
+		t.Fatalf("clampContent alterou o caso comum:\nesperado=%q\nveio=%q", comum, got)
+	}
+	if strings.Contains(got, "truncado") {
+		t.Fatalf("caso comum nao deveria ter aviso de truncamento: %q", got)
+	}
+}
+
+// TestClampContentNaoParteRune garante que o recuo até a fronteira de rune
+// funciona mesmo com texto multibyte. Usa "€" (3 bytes) de propósito: com um
+// caractere de 2 bytes o corte em contentBudget=1900 (par) sempre cairia
+// numa fronteira por coincidência aritmética e o teste nunca pegaria a
+// mutação que remove o recuo (1900 não é múltiplo de 3).
+func TestClampContentNaoParteRune(t *testing.T) {
+	termoLongo := strings.Repeat("€", 1000) // 3000 bytes
+	got := clampContent(termoLongo)
+	if !utf8.ValidString(got) {
+		t.Fatalf("clampContent partiu um caractere UTF-8 no meio: %q", got)
 	}
 }
