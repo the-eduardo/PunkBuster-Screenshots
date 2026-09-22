@@ -167,3 +167,41 @@ func TestExtract_GUIDComAsteriscos(t *testing.T) {
 		t.Fatalf("nome incorreto: %q", info.PlayerName)
 	}
 }
+
+// TestExtract_ReasonDistingueAsTresCausasDeEmpty prova o defeito medido em
+// produção (22/09/2026): o WARN de "sem GUID" tratava arquivo truncado, linha
+// vazia e header deslocado (banner de servidor) como uma frase única — mas
+// são fenômenos com frequência bem diferente (banner é 100% dos casos reais,
+// linha vazia nunca ocorreu). Info.Reason precisa distinguir as três.
+func TestExtract_ReasonDistingueAsTresCausasDeEmpty(t *testing.T) {
+	casos := []struct {
+		nome   string
+		data   []byte
+		motivo string
+	}{
+		{"arquivo truncado", []byte("BF4\nsvss\n"), ReasonArquivoTruncado},
+		{"linha vazia", fixture(""), ReasonLinhaVazia},
+		{"header deslocado (banner)", fixture("942301 131.196.199.123:25220 !...!DuckDuck Op.Locker.60hp"), ReasonHeaderDeslocado},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			info := Extract(c.data)
+			if !info.Empty {
+				t.Fatalf("esperava Empty=true pra %q", c.nome)
+			}
+			if info.Reason != c.motivo {
+				t.Fatalf("Reason incorreto pra %q: esperava %q, veio %q", c.nome, c.motivo, info.Reason)
+			}
+		})
+	}
+}
+
+// TestExtract_ReasonVazioNoCasoNormal é o par obrigatório do teste acima: um
+// cabeçalho válido não pode carregar nenhum dos três motivos.
+func TestExtract_ReasonVazioNoCasoNormal(t *testing.T) {
+	data := fixture("5416a6f4ea15c7a4782f4bf64dab0182 JoseToalha")
+	info := Extract(data)
+	if info.Empty || info.Reason != "" {
+		t.Fatalf("cabeçalho válido não deveria ter Empty nem Reason, veio Empty=%v Reason=%q", info.Empty, info.Reason)
+	}
+}

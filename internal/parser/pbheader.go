@@ -34,7 +34,20 @@ type Info struct {
 	// arquivo com menos de 5 linhas — o arquivo local já foi apagado quando o
 	// WARN é lido, então é agora ou nunca pra diagnosticar a causa.
 	RawLine string
+	// Reason identifica qual dos três ramos produziu Empty=true: o WARN que
+	// lê este campo tratava as três causas como uma única frase genérica
+	// ("veio sem GUID"), mas elas são fenômenos distintos com frequência
+	// muito diferente em produção — medido em 22/09/2026, "header-deslocado"
+	// (banner do servidor) é 100% dos casos e "linha-vazia" nunca ocorreu.
+	Reason string
 }
+
+// Motivos possíveis de Info.Empty, usados no log de diagnóstico.
+const (
+	ReasonArquivoTruncado = "arquivo-truncado"
+	ReasonLinhaVazia      = "linha-vazia"
+	ReasonHeaderDeslocado = "header-deslocado"
+)
 
 // rawSnippetMaxBytes é o teto de bytes de RawLine — o suficiente pra
 // identificar o header sem arriscar carregar dado binário de imagem pro log.
@@ -66,17 +79,17 @@ func rawSnippet(b []byte) string {
 func Extract(data []byte) Info {
 	lines := bytes.SplitN(data, []byte("\n"), guidLineIndex+2)
 	if len(lines) <= guidLineIndex {
-		return Info{Empty: true}
+		return Info{Empty: true, Reason: ReasonArquivoTruncado}
 	}
 
 	line := bytes.TrimSpace(bytes.TrimRight(lines[guidLineIndex], "\r"))
 	if len(line) == 0 {
-		return Info{Empty: true}
+		return Info{Empty: true, Reason: ReasonLinhaVazia}
 	}
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true, RawLine: rawSnippet(line)}
+		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line)}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {
