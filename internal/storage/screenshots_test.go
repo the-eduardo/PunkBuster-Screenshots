@@ -134,6 +134,62 @@ func TestSearchByNameEscapaCuringasDoLIKE(t *testing.T) {
 	}
 }
 
+// TestGetStatsTop10PreservaSemantica caracteriza o comportamento de GetStats
+// (top 10) que não pode mudar numa reescrita de query por performance: nome
+// mais recente por GUID, contagem correta, ordem por contagem desc, e GUID
+// sem nenhum nome em player_names fora do resultado (não pode virar NULL nem
+// entrar como linha vazia). Escrito e validado contra a query ORIGINAL antes
+// de qualquer reescrita — se este teste já nascer vermelho, a query nova não
+// tem base de comparação.
+func TestGetStatsTop10PreservaSemantica(t *testing.T) {
+	s := openTestStore(t)
+	t0 := time.Now().UTC().Truncate(time.Second)
+	t1 := t0.Add(time.Minute)
+	t2 := t0.Add(2 * time.Minute)
+
+	// GUID A: 3 screenshots, nome mais recente "novo" (t1 e t2), mais antigo "velho" (t0).
+	mustRecord(t, s, ScreenshotRecord{GUID: "A", PlayerName: "velho", ReceivedAt: t0, Server: "srv", FileName: "a1.png"})
+	mustRecord(t, s, ScreenshotRecord{GUID: "A", PlayerName: "novo", ReceivedAt: t1, Server: "srv", FileName: "a2.png"})
+	mustRecord(t, s, ScreenshotRecord{GUID: "A", PlayerName: "novo", ReceivedAt: t2, Server: "srv", FileName: "a3.png"})
+
+	// GUID B: 2 screenshots sem nome nenhum — o guard de PlayerName=="" pula
+	// player_names (screenshots.go:53), então B nunca aparece na tabela de
+	// nomes. Se vazar pro top10, entra em 2º lugar (2 > 1 de C) e o teste
+	// quebra de forma óbvia.
+	mustRecord(t, s, ScreenshotRecord{GUID: "B", PlayerName: "", ReceivedAt: t0, Server: "srv", FileName: "b1.png"})
+	mustRecord(t, s, ScreenshotRecord{GUID: "B", PlayerName: "", ReceivedAt: t1, Server: "srv", FileName: "b2.png"})
+
+	// GUID C: 1 screenshot, nome "c".
+	mustRecord(t, s, ScreenshotRecord{GUID: "C", PlayerName: "c", ReceivedAt: t0, Server: "srv", FileName: "c1.png"})
+
+	stats, err := s.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats falhou: %v", err)
+	}
+
+	if len(stats.TopPlayers) != 2 {
+		t.Fatalf("esperava 2 entradas no top10 (A e C, sem B), veio %d: %+v", len(stats.TopPlayers), stats.TopPlayers)
+	}
+	if got := stats.TopPlayers[0]; got.GUID != "A" || got.Name != "novo" || got.Count != 3 {
+		t.Fatalf("1º lugar esperado {A novo 3}, veio %+v", got)
+	}
+	if got := stats.TopPlayers[1]; got.GUID != "C" || got.Name != "c" || got.Count != 1 {
+		t.Fatalf("2º lugar esperado {C c 1}, veio %+v", got)
+	}
+	for _, tp := range stats.TopPlayers {
+		if tp.GUID == "B" {
+			t.Fatalf("GUID B nao tem nome em player_names e nao deveria aparecer no top10: %+v", stats.TopPlayers)
+		}
+	}
+}
+
+func mustRecord(t *testing.T, s *Store, rec ScreenshotRecord) {
+	t.Helper()
+	if err := s.RecordScreenshot(rec); err != nil {
+		t.Fatalf("RecordScreenshot(%+v) falhou: %v", rec, err)
+	}
+}
+
 func TestSameGUIDMultipleNames(t *testing.T) {
 	s := openTestStore(t)
 	now := time.Now().UTC()
