@@ -247,15 +247,41 @@ func buildLastEmbed(termo string, results []storage.ScreenshotRecord) *discordgo
 	}
 }
 
+// runStats dá ACK (defer) antes de consultar o banco, porque GetStats está
+// medido em produção acima de 1s e crescendo (~+0,036s a cada 2,5k linhas) —
+// o Discord invalida a interação se a PRIMEIRA resposta não sair em 3s, e o
+// prazo real inclui a fila da única conexão sqlite (SetMaxOpenConns(1))
+// disputada com a escrita do pipeline. Com o defer, GetStats pode demorar o
+// quanto precisar: a resposta final vai por edição do ACK, não por uma
+// segunda InteractionRespond (que já teria consumido o token).
 func (h *Handler) runStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	stats, err := h.Store.GetStats()
-	if err != nil {
-		h.respondError(s, i, err)
+	if err := respond(s, i, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	}); err != nil {
 		return
 	}
 
-	embed := buildStatsEmbed(stats)
-	h.respondEphemeral(s, i, "", []*discordgo.MessageEmbed{embed}, nil)
+	stats, err := h.Store.GetStats()
+	if err != nil {
+		h.respondEditError(s, i, err)
+		return
+	}
+
+	embeds := []*discordgo.MessageEmbed{buildStatsEmbed(stats)}
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &embeds}); err != nil {
+		slog.Error("falha ao editar resposta do /pbss stats", "erro", err)
+	}
+}
+
+// respondEditError edita a resposta já ACKada (deferred) com uma mensagem de
+// erro. Não pode reusar respondError/respondEphemeral: o token da interação
+// já foi consumido pelo ACK, e uma segunda InteractionRespond falharia.
+func (h *Handler) respondEditError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
+	content := clampContent(fmt.Sprintf("Erro ao consultar o índice: %v", err))
+	if _, editErr := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); editErr != nil {
+		slog.Error("falha ao editar resposta de erro do /pbss stats", "erro", editErr)
+	}
 }
 
 // buildStatsEmbed é o recorte de runStats que monta o embed — separado só pra

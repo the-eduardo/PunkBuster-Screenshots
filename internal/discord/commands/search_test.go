@@ -203,6 +203,51 @@ func TestRunSearchLogaFalhaDaInteracao(t *testing.T) {
 	}
 }
 
+// TestRunStatsAckFalhaInterrompeAntesDeConsultarBanco cobre a fiação do defer
+// em runStats (22/09/2026): a primeira resposta é sempre o ACK deferred, e se
+// ele falhar (rede, token revogado, etc.) runStats não pode seguir adiante —
+// chamar GetStats e depois tentar editar uma interação cujo ACK nem chegou ao
+// Discord só produziria um segundo erro mudo. Usa storage real (igual
+// TestRunSearchLogaFalhaDaInteracao) pra exercitar runStats por inteiro via
+// HandleInteraction, não a função isolada.
+func TestRunStatsAckFalhaInterrompeAntesDeConsultarBanco(t *testing.T) {
+	logBuf := capturaLog(t)
+
+	st, err := storage.Open(filepath.Join(t.TempDir(), "pbss.db"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer st.Close()
+
+	session, err := discordgo.New("Bot faketoken")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	session.Client.Transport = erroDeRedeTransport{}
+
+	h := NewHandler(st)
+	i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+		ID:    "1",
+		Token: "tok-fake",
+		Type:  discordgo.InteractionApplicationCommand,
+		Data: discordgo.ApplicationCommandInteractionData{
+			Name: "pbss",
+			Options: []*discordgo.ApplicationCommandInteractionDataOption{
+				{Name: "stats"},
+			},
+		},
+	}}
+
+	h.HandleInteraction(session, i)
+
+	if !strings.Contains(logBuf.String(), "falha ao responder interacao") {
+		t.Fatalf("esperava log de erro no ACK do /pbss stats, log veio: %q", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "falha ao editar resposta do /pbss stats") {
+		t.Fatalf("ACK falhou mas runStats seguiu adiante e tentou editar a resposta mesmo assim: %q", logBuf.String())
+	}
+}
+
 // TestHandleInteractionRecuperaDePanicNoHandler prova que um panic dentro da
 // árvore de handlers (aqui, indexação sub.Options[0] em handleCommand com um
 // payload malformado — sem a opção obrigatória "termo") não mata o processo:
