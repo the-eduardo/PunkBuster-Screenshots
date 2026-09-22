@@ -221,7 +221,7 @@ func (p *Pipeline) processFile(f source.FileInfo) bool {
 	}
 	info := parser.Extract(data)
 	if info.Empty {
-		slog.Warn("cabeçalho sem GUID na linha esperada, enviando sem atribuição de jogador", "arquivo", f.Name, "motivo", info.Reason, "linha4", info.RawLine)
+		slog.Warn("cabeçalho sem GUID na linha esperada, enviando sem atribuição de jogador", "arquivo", f.Name, "motivo", info.Reason, "linha4", info.RawLine, "guid_na_linha", info.GUIDLineIndex)
 		info.GUID = "unknown"
 		info.PlayerName = "(sem GUID)"
 	}

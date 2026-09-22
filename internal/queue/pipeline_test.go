@@ -700,3 +700,48 @@ func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
 		t.Errorf("inFlight nao deveria ter sido liberado: processFile so libera em falha, e este enfileirou com sucesso")
 	}
 }
+
+// TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex exercita a fiação real
+// (processFile -> parser.Extract -> WARN de pipeline.go:224) com um header
+// deslocado cujo GUID de verdade sobrevive intacto na linha seguinte ao
+// banner — o cenário que motivou GUIDLineIndex. Prova que o índice chega até
+// o WARN em produção, e que o job ainda é enfileirado com a sentinela
+// "sem GUID" (o diagnóstico não muda o comportamento de envio). Mutação que
+// derruba este teste: apagar `"guid_na_linha", info.GUIDLineIndex` de
+// pipeline.go:224 — o teste falha porque "guid_na_linha=5" some do log.
+func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
+	dir := t.TempDir()
+	header := strings.Join([]string{
+		"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+		"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha",
+	}, "\n") + "\n"
+	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+	src := &fakeSourceContent{data: data}
+
+	buf := &bytes.Buffer{}
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	p := &Pipeline{
+		ServerLabel: "servidor-de-teste",
+		SFTPFolder:  "pb",
+		TempDir:     dir,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	f := source.FileInfo{Name: "pb999100.png", Size: int64(len(data)), ModTime: time.Now()}
+	if ok := p.processFile(f); !ok {
+		t.Fatalf("processFile deveria ter enfileirado o arquivo com sucesso (GUID recuperável não muda o envio)")
+	}
+
+	logado := buf.String()
+	if !strings.Contains(logado, "guid_na_linha=5") {
+		t.Fatalf("esperava guid_na_linha=5 no WARN, log: %q", logado)
+	}
+	if !strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
+		t.Fatalf("esperava o WARN de header sem atribuicao de jogador, log: %q", logado)
+	}
+}

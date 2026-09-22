@@ -40,6 +40,12 @@ type Info struct {
 	// muito diferente em produção — medido em 22/09/2026, "header-deslocado"
 	// (banner do servidor) é 100% dos casos e "linha-vazia" nunca ocorreu.
 	Reason string
+	// GUIDLineIndex é o índice 0-based da primeira linha, dentro das
+	// primeiras headerScanLines linhas do arquivo, cujo primeiro campo casa
+	// guidPattern — ou -1 quando nenhuma casa. Preenchido em TODO retorno
+	// Empty, pra medir se um header deslocado (RawLine = banner de servidor)
+	// ainda tem o GUID recuperável em outra linha.
+	GUIDLineIndex int
 }
 
 // Motivos possíveis de Info.Empty, usados no log de diagnóstico.
@@ -48,6 +54,36 @@ const (
 	ReasonLinhaVazia      = "linha-vazia"
 	ReasonHeaderDeslocado = "header-deslocado"
 )
+
+// headerScanLines é o teto de linhas varridas por findGUIDLine — o
+// suficiente pra cobrir um header deslocado por poucas linhas sem arriscar
+// varrer o corpo binário da imagem inteiro.
+const headerScanLines = 8
+
+// findGUIDLine varre as primeiras headerScanLines linhas de data e devolve o
+// índice 0-based da primeira cujo primeiro campo casa guidPattern, ou -1 se
+// nenhuma casar. Usa o mesmo recorte (TrimSpace/TrimRight("\r")/split no
+// primeiro espaço) que Extract aplica na linha fixa.
+func findGUIDLine(data []byte) int {
+	parts := bytes.SplitN(data, []byte("\n"), headerScanLines+1)
+	lines := parts
+	if len(parts) > headerScanLines {
+		// O split saturou: a última fatia é o resto binário da imagem, não
+		// uma linha de header — descartar antes de varrer.
+		lines = parts[:headerScanLines]
+	}
+	for i, raw := range lines {
+		line := bytes.TrimSpace(bytes.TrimRight(raw, "\r"))
+		if len(line) == 0 {
+			continue
+		}
+		field := bytes.SplitN(line, []byte(" "), 2)[0]
+		if guidPattern.Match(field) {
+			return i
+		}
+	}
+	return -1
+}
 
 // rawSnippetMaxBytes é o teto de bytes de RawLine — o suficiente pra
 // identificar o header sem arriscar carregar dado binário de imagem pro log.
@@ -79,17 +115,17 @@ func rawSnippet(b []byte) string {
 func Extract(data []byte) Info {
 	lines := bytes.SplitN(data, []byte("\n"), guidLineIndex+2)
 	if len(lines) <= guidLineIndex {
-		return Info{Empty: true, Reason: ReasonArquivoTruncado}
+		return Info{Empty: true, Reason: ReasonArquivoTruncado, GUIDLineIndex: findGUIDLine(data)}
 	}
 
 	line := bytes.TrimSpace(bytes.TrimRight(lines[guidLineIndex], "\r"))
 	if len(line) == 0 {
-		return Info{Empty: true, Reason: ReasonLinhaVazia}
+		return Info{Empty: true, Reason: ReasonLinhaVazia, GUIDLineIndex: findGUIDLine(data)}
 	}
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line)}
+		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line), GUIDLineIndex: findGUIDLine(data)}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {
