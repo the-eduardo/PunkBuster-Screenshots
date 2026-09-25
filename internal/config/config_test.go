@@ -148,18 +148,31 @@ func TestLoad_ModosValidosPassam(t *testing.T) {
 	}
 }
 
-func TestLoad_WaitingTimeDefaultForaDoIntervalo(t *testing.T) {
-	cases := []string{"", "1", "121", "abc"}
+func TestLoad_WaitingTimeDefaultQuandoAusente(t *testing.T) {
+	setRequiredEnv(t, map[string]string{"WAITING_TIME": ""})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() não deveria falhar com WAITING_TIME ausente, erro: %v", err)
+	}
+	if cfg.WaitingTime != 30*time.Minute {
+		t.Fatalf("WaitingTime = %v, esperado default 30m para WAITING_TIME ausente", cfg.WaitingTime)
+	}
+}
+
+// TestLoad_WaitingTimeInvalidoFalhaFechado e' o ajuste de 25/09/2026: valor
+// PRESENTE mas invalido (fora do intervalo, ou nao numerico) deixava de cair
+// no default silenciosamente. Espelha o fail-closed ja aplicado em
+// SELECT_FTP_MODE (11/09/2026) — typo/confusao de unidade agora e' erro de
+// boot, nao um comportamento diferente do pedido sem nenhum sinal.
+func TestLoad_WaitingTimeInvalidoFalhaFechado(t *testing.T) {
+	cases := []string{"1", "121", "abc", "20s", "1200"}
 	for _, wt := range cases {
 		wt := wt
 		t.Run("waiting_time="+wt, func(t *testing.T) {
 			setRequiredEnv(t, map[string]string{"WAITING_TIME": wt})
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() não deveria falhar com WAITING_TIME=%q, erro: %v", wt, err)
-			}
-			if cfg.WaitingTime != 30*time.Minute {
-				t.Fatalf("WaitingTime = %v, esperado default 30m para WAITING_TIME=%q", cfg.WaitingTime, wt)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("WAITING_TIME=%q deveria falhar o boot (fail-closed), mas Load() passou", wt)
 			}
 		})
 	}
@@ -176,18 +189,28 @@ func TestLoad_WaitingTimeValidoDentroDoIntervalo(t *testing.T) {
 	}
 }
 
-func TestLoad_RetentionHoursDefaultQuandoInvalido(t *testing.T) {
-	cases := []string{"", "0", "-5", "abc"}
+func TestLoad_RetentionHoursDefaultQuandoAusente(t *testing.T) {
+	setRequiredEnv(t, map[string]string{"RETENTION_HOURS": ""})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() não deveria falhar com RETENTION_HOURS ausente, erro: %v", err)
+	}
+	if cfg.RetentionHours != 24 {
+		t.Fatalf("RetentionHours = %d, esperado default 24 para RETENTION_HOURS ausente", cfg.RetentionHours)
+	}
+}
+
+// TestLoad_RetentionHoursInvalidoFalhaFechado e' o ajuste de 25/09/2026:
+// espelha TestLoad_WaitingTimeInvalidoFalhaFechado para RETENTION_HOURS.
+func TestLoad_RetentionHoursInvalidoFalhaFechado(t *testing.T) {
+	cases := []string{"0", "-5", "abc", "48h"}
 	for _, rh := range cases {
 		rh := rh
 		t.Run("retention_hours="+rh, func(t *testing.T) {
 			setRequiredEnv(t, map[string]string{"RETENTION_HOURS": rh})
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() não deveria falhar com RETENTION_HOURS=%q, erro: %v", rh, err)
-			}
-			if cfg.RetentionHours != 24 {
-				t.Fatalf("RetentionHours = %d, esperado default 24 para RETENTION_HOURS=%q", cfg.RetentionHours, rh)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("RETENTION_HOURS=%q deveria falhar o boot (fail-closed), mas Load() passou", rh)
 			}
 		})
 	}
