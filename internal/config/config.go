@@ -99,9 +99,17 @@ func Load() (*Config, error) {
 				"antes de confiar. Para rodar sem verificacao, defina SFTP_INSECURE_HOST_KEY=true")
 	}
 
-	waitingMinutes, err := strconv.Atoi(get("WAITING_TIME"))
-	if err != nil || waitingMinutes < 2 || waitingMinutes > 120 {
-		waitingMinutes = 30
+	rawWaitingTime := get("WAITING_TIME")
+	waitingMinutes := 30
+	if rawWaitingTime != "" {
+		wm, err := strconv.Atoi(rawWaitingTime)
+		if err != nil || wm < 2 || wm > 120 {
+			return nil, fmt.Errorf(
+				"WAITING_TIME=%q invalido: use um inteiro entre 2 e 120 (minutos). "+
+					"Sem isso o bot rodaria com uma latencia diferente da pedida, sem nenhum sinal disso no log",
+				truncateForError(rawWaitingTime))
+		}
+		waitingMinutes = wm
 	}
 	cfg.WaitingTime = time.Duration(waitingMinutes) * time.Minute
 
@@ -120,9 +128,17 @@ func Load() (*Config, error) {
 		cfg.TempDir = "/data/tmp"
 	}
 
-	cfg.RetentionHours, err = strconv.Atoi(get("RETENTION_HOURS"))
-	if err != nil || cfg.RetentionHours <= 0 {
-		cfg.RetentionHours = 24
+	rawRetentionHours := get("RETENTION_HOURS")
+	cfg.RetentionHours = 24
+	if rawRetentionHours != "" {
+		rh, err := strconv.Atoi(rawRetentionHours)
+		if err != nil || rh <= 0 {
+			return nil, fmt.Errorf(
+				"RETENTION_HOURS=%q invalido: use um inteiro maior que 0 (horas). "+
+					"Sem isso o bot rodaria com uma retencao diferente da pedida, sem nenhum sinal disso no log",
+				truncateForError(rawRetentionHours))
+		}
+		cfg.RetentionHours = rh
 	}
 
 	cfg.DebugMode, _ = strconv.ParseBool(get("DEBUG_MODE"))
