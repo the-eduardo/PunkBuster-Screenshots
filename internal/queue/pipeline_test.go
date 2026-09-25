@@ -681,7 +681,7 @@ func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
 	}
 
 	logado := buf.String()
-	if !strings.Contains(logado, "cabeçalho do screenshot veio sem GUID") {
+	if !strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
 		t.Fatalf("esperava WARN de header sem atribuicao de jogador para a linha de banner, log: %q", logado)
 	}
 	// Prova a fiação de Info.RawLine até o WARN real (não só o campo no struct):
@@ -689,6 +689,12 @@ func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
 	// asserção sem afetar o teste de unidade em pbheader_test.go.
 	if !strings.Contains(logado, "linha4=") || !strings.Contains(logado, "131.196.199.123:25220") {
 		t.Fatalf("esperava a linha 4 crua (linha4=...) no WARN, log: %q", logado)
+	}
+	// Prova a fiação de Info.Reason até o WARN real (22/09/2026): mutação que
+	// remove "motivo", info.Reason de pipeline.go:224 derruba esta asserção
+	// sem afetar o teste de unidade em pbheader_test.go.
+	if !strings.Contains(logado, "motivo=header-deslocado") {
+		t.Fatalf("esperava motivo=header-deslocado no WARN, log: %q", logado)
 	}
 	if _, aindaEmVoo := p.inFlight.Load(f.Name); !aindaEmVoo {
 		t.Errorf("inFlight nao deveria ter sido liberado: processFile so libera em falha, e este enfileirou com sucesso")
@@ -735,7 +741,7 @@ func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
 	if !strings.Contains(logado, "guid_na_linha=5") {
 		t.Fatalf("esperava guid_na_linha=5 no WARN, log: %q", logado)
 	}
-	if !strings.Contains(logado, "cabeçalho do screenshot veio sem GUID") {
+	if !strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
 		t.Fatalf("esperava o WARN de header sem atribuicao de jogador, log: %q", logado)
 	}
 }

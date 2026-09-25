@@ -34,6 +34,12 @@ type Info struct {
 	// arquivo com menos de 5 linhas — o arquivo local já foi apagado quando o
 	// WARN é lido, então é agora ou nunca pra diagnosticar a causa.
 	RawLine string
+	// Reason identifica qual dos três ramos produziu Empty=true: o WARN que
+	// lê este campo tratava as três causas como uma única frase genérica
+	// ("veio sem GUID"), mas elas são fenômenos distintos com frequência
+	// muito diferente em produção — medido em 22/09/2026, "header-deslocado"
+	// (banner do servidor) é 100% dos casos e "linha-vazia" nunca ocorreu.
+	Reason string
 	// GUIDLineIndex é o índice 0-based da primeira linha, dentro das
 	// primeiras headerScanLines linhas do arquivo, cujo primeiro campo casa
 	// guidPattern — ou -1 quando nenhuma casa. Preenchido em TODO retorno
@@ -41,6 +47,13 @@ type Info struct {
 	// ainda tem o GUID recuperável em outra linha.
 	GUIDLineIndex int
 }
+
+// Motivos possíveis de Info.Empty, usados no log de diagnóstico.
+const (
+	ReasonArquivoTruncado = "arquivo-truncado"
+	ReasonLinhaVazia      = "linha-vazia"
+	ReasonHeaderDeslocado = "header-deslocado"
+)
 
 // headerScanLines é o teto de linhas varridas por findGUIDLine — o
 // suficiente pra cobrir um header deslocado por poucas linhas sem arriscar
@@ -102,17 +115,17 @@ func rawSnippet(b []byte) string {
 func Extract(data []byte) Info {
 	lines := bytes.SplitN(data, []byte("\n"), guidLineIndex+2)
 	if len(lines) <= guidLineIndex {
-		return Info{Empty: true, GUIDLineIndex: findGUIDLine(data)}
+		return Info{Empty: true, Reason: ReasonArquivoTruncado, GUIDLineIndex: findGUIDLine(data)}
 	}
 
 	line := bytes.TrimSpace(bytes.TrimRight(lines[guidLineIndex], "\r"))
 	if len(line) == 0 {
-		return Info{Empty: true, GUIDLineIndex: findGUIDLine(data)}
+		return Info{Empty: true, Reason: ReasonLinhaVazia, GUIDLineIndex: findGUIDLine(data)}
 	}
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true, RawLine: rawSnippet(line), GUIDLineIndex: findGUIDLine(data)}
+		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line), GUIDLineIndex: findGUIDLine(data)}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {
