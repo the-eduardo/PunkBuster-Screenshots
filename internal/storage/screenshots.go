@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -84,12 +85,22 @@ func (s *Store) SearchByGUID(guid string, limit int) ([]ScreenshotRecord, error)
 	`, guid, guid, limit)
 }
 
+// escapeLike escapa os curingas do LIKE (_ casa 1 caractere, % casa N) antes
+// de o termo entrar num '%' || ? || '%'. Nome de jogador do PunkBuster usa _
+// o tempo todo (medido em produção: 2019 dos 13514 nomes distintos), e sem
+// escapar, um termo como "Ju5t___C___" também casa GUIDs completamente
+// diferentes cujo nome só coincide na posição dos underscores — num bot de
+// anti-cheat, misturar screenshots de dois jogadores é o defeito mais caro.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
 // SearchByName retorna os screenshots mais recentes de jogadores cujo nome contém `name`.
 func (s *Store) SearchByName(name string, limit int) ([]ScreenshotRecord, error) {
 	return s.query(`
 		SELECT id, guid, player_name, filename, captured_at, received_at, server, discord_guild_id, discord_channel_id, discord_message_id
-		FROM screenshots WHERE player_name LIKE '%' || ? || '%' ORDER BY received_at DESC LIMIT ?
-	`, name, limit)
+		FROM screenshots WHERE player_name LIKE '%' || ? || '%' ESCAPE '\' ORDER BY received_at DESC LIMIT ?
+	`, escapeLike(name), limit)
 }
 
 func (s *Store) query(q string, args ...any) ([]ScreenshotRecord, error) {

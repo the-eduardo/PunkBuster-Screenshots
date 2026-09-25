@@ -49,3 +49,36 @@ func TestLookupAchaGUIDGravadoComAsterisco(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupEscapaCuringasNaBuscaPorNome prova que o escape de LIKE chega
+// pelo caminho REAL do /pbss search (h.lookup), não só na SearchByName
+// isolada: dois GUIDs diferentes cujo nome só coincide na posição dos
+// underscores não podem se misturar quando o termo vem de lookup.
+func TestLookupEscapaCuringasNaBuscaPorNome(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open falhou: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := store.RecordScreenshot(storage.ScreenshotRecord{
+		GUID: "guidA", PlayerName: "Ju5t___C___", FileName: "a.png", Server: "srv",
+	}); err != nil {
+		t.Fatalf("RecordScreenshot(guidA) falhou: %v", err)
+	}
+	if err := store.RecordScreenshot(storage.ScreenshotRecord{
+		GUID: "guidB", PlayerName: "Ju5t___CHR___", FileName: "b.png", Server: "srv",
+	}); err != nil {
+		t.Fatalf("RecordScreenshot(guidB) falhou: %v", err)
+	}
+
+	h := &Handler{Store: store, states: make(map[string]*searchState)}
+
+	results, err := h.lookup("Ju5t___C___", 50)
+	if err != nil {
+		t.Fatalf("lookup falhou: %v", err)
+	}
+	if len(results) != 1 || results[0].GUID != "guidA" {
+		t.Fatalf("lookup misturou GUIDs diferentes: %+v", results)
+	}
+}

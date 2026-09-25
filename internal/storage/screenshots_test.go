@@ -99,6 +99,41 @@ func TestNomeVazioNaoEntraEmPlayerNames(t *testing.T) {
 	}
 }
 
+// TestSearchByNameEscapaCuringasDoLIKE prova o defeito medido em produção
+// (21/09/2026): sem escapar _ e %, SearchByName mistura jogadores diferentes
+// cujo nome só coincide na posição dos curingas do LIKE. "Ju5t___C___" e
+// "Ju5t___CHR___" são GUIDs DIFERENTES — buscar pelo primeiro não pode trazer
+// o segundo.
+func TestSearchByNameEscapaCuringasDoLIKE(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().UTC()
+
+	if err := s.RecordScreenshot(ScreenshotRecord{GUID: "guidA", PlayerName: "Ju5t___C___", ReceivedAt: now, Server: "srv", FileName: "a.png"}); err != nil {
+		t.Fatalf("RecordScreenshot(guidA) falhou: %v", err)
+	}
+	if err := s.RecordScreenshot(ScreenshotRecord{GUID: "guidB", PlayerName: "Ju5t___CHR___", ReceivedAt: now, Server: "srv", FileName: "b.png"}); err != nil {
+		t.Fatalf("RecordScreenshot(guidB) falhou: %v", err)
+	}
+
+	results, err := s.SearchByName("Ju5t___C___", 50)
+	if err != nil {
+		t.Fatalf("SearchByName falhou: %v", err)
+	}
+	if len(results) != 1 || results[0].GUID != "guidA" {
+		t.Fatalf("esperava so o GUID exato (guidA), veio %+v", results)
+	}
+
+	// Caso degenerado sem escape: "_" sozinho casaria QUALQUER nome de 1+
+	// caractere. Com escape, "_" vira busca literal por um underscore.
+	soUnderscore, err := s.SearchByName("_", 50)
+	if err != nil {
+		t.Fatalf("SearchByName(_) falhou: %v", err)
+	}
+	if len(soUnderscore) != 2 {
+		t.Fatalf("esperava 2 (os dois nomes tem underscore literal), veio %d: %+v", len(soUnderscore), soUnderscore)
+	}
+}
+
 // TestGetStatsTop10PreservaSemantica caracteriza o comportamento de GetStats
 // (top 10) que não pode mudar numa reescrita de query por performance: nome
 // mais recente por GUID, contagem correta, ordem por contagem desc, e GUID
