@@ -47,6 +47,7 @@ func StartKumaHeartbeat(ctx context.Context, s *discordgo.Session, pollAlive fun
 		defer t.Stop()
 		warned := false
 		pollWarned := false
+		gwWarned := false
 		for {
 			alive := pollAlive == nil || pollAlive()
 			if !alive && !pollWarned {
@@ -54,6 +55,12 @@ func StartKumaHeartbeat(ctx context.Context, s *discordgo.Session, pollAlive fun
 				pollWarned = true
 			} else if alive {
 				pollWarned = false
+			}
+			if !s.DataReady && !gwWarned {
+				slog.Warn("gateway do discord desconectado, suspendendo pulso do Kuma")
+				gwWarned = true
+			} else if s.DataReady {
+				gwWarned = false
 			}
 			if s.DataReady && alive {
 				resp, err := client.Get(url + "?status=up&msg=gateway+ok")

@@ -61,6 +61,54 @@ func TestStartKumaHeartbeatSuspendeSemPollAlive(t *testing.T) {
 	}
 }
 
+// TestStartKumaHeartbeatSuspendeComGatewayCaido cobre o ramo simétrico ao
+// teste acima e que não tinha nenhum teste: DataReady == false (gateway do
+// discordgo desconectado) com o poller SAUDÁVEL. Só prova a supressão, não a
+// volta do pulso — setar session.DataReady = true no meio do teste seria
+// corrida real com a goroutine do heartbeat, que lê o campo sem lock (mesma
+// classe do achado que gerou o syncBuffer no comitê de 29/08/2026); a volta
+// já está coberta por TestStartKumaHeartbeatSuspendeSemPollAlive. Se alguém
+// remover a checagem de s.DataReady do laço, este teste falha.
+func TestStartKumaHeartbeatSuspendeComGatewayCaido(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	t.Setenv("KUMA_PUSH_URL", srv.URL)
+
+	orig := kumaHeartbeatInterval
+	kumaHeartbeatInterval = 20 * time.Millisecond
+	defer func() { kumaHeartbeatInterval = orig }()
+
+	buf := &syncBuffer{}
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	session := &discordgo.Session{} // DataReady fica false (zero value)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	StartKumaHeartbeat(ctx, session, func() bool { return true })
+
+	time.Sleep(200 * time.Millisecond)
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("gateway caido (DataReady=false) deveria suspender o pulso do Kuma, mas recebeu %d hit(s)", got)
+	}
+
+	logado := buf.String()
+	if !strings.Contains(logado, "gateway do discord desconectado") {
+		t.Fatalf("esperava WARN dedupado avisando do gateway caido (espelho do WARN do poller), log: %q", logado)
+	}
+	if n := strings.Count(logado, "gateway do discord desconectado"); n != 1 {
+		t.Fatalf("esperava exatamente 1 WARN (dedup por sequencia de falhas), veio %d: %q", n, logado)
+	}
+}
+
 // TestStartKumaHeartbeatPollAliveNilMantemComportamentoAntigo garante que
 // pollAlive == nil (chamador que não montou pipeline nenhum, ex. outro
 // binário de teste/ferramenta) preserva o comportamento anterior à mudança:
