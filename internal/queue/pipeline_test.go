@@ -704,11 +704,12 @@ func TestProcessFileBannerDeServidorNaoViraGUID(t *testing.T) {
 // TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex exercita a fiação real
 // (processFile -> parser.Extract -> WARN de pipeline.go:224) com um header
 // deslocado cujo GUID de verdade sobrevive intacto na linha seguinte ao
-// banner — o cenário que motivou GUIDLineIndex. Prova que o índice chega até
-// o WARN em produção, e que o job ainda é enfileirado com a sentinela
-// "sem GUID" (o diagnóstico não muda o comportamento de envio). Mutação que
-// derruba este teste: apagar `"guid_na_linha", info.GUIDLineIndex` de
-// pipeline.go:224 — o teste falha porque "guid_na_linha=5" some do log.
+// banner. Atualizado em 26/09/2026 (medição em produção: 57/57 casos de
+// header-deslocado recuperáveis): o job agora é enfileirado com o GUID REAL,
+// não a sentinela "unknown" — o WARN muda de "sem GUID" pra "recuperado", mas
+// continua registrando guid_na_linha. Mutação que derruba este teste: apagar
+// `"guid_na_linha", info.GUIDLineIndex` do ramo Recovered de pipeline.go — o
+// teste falha porque "guid_na_linha=5" some do log.
 func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
 	dir := t.TempDir()
 	header := strings.Join([]string{
@@ -741,7 +742,56 @@ func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
 	if !strings.Contains(logado, "guid_na_linha=5") {
 		t.Fatalf("esperava guid_na_linha=5 no WARN, log: %q", logado)
 	}
-	if !strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
-		t.Fatalf("esperava o WARN de header sem atribuicao de jogador, log: %q", logado)
+	if !strings.Contains(logado, "header deslocado, GUID recuperado na linha seguinte") {
+		t.Fatalf("esperava o WARN de recuperação, log: %q", logado)
+	}
+	if strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
+		t.Fatalf("GUID recuperável não deveria disparar o WARN de sem-atribuição, log: %q", logado)
+	}
+}
+
+// TestProcessFileHeaderDeslocadoGravaGUIDRealNoIndice fecha a ponta a ponta:
+// o GUID recuperado de processFile precisa sobreviver até o índice sqlite, não
+// só até o WARN. Reusa o padrão de TestOnSendResultSucessoGravaEIndexaELimpa,
+// mas com o Info que parser.Extract realmente produz para este header — a
+// mesma classe de bug do 01/09 (dado certo no struct, sentinela errada no
+// banco) só aparece testando a fiação completa, não uma função isolada.
+func TestProcessFileHeaderDeslocadoGravaGUIDRealNoIndice(t *testing.T) {
+	header := strings.Join([]string{
+		"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+		"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha",
+	}, "\n") + "\n"
+	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+
+	info := parser.Extract(data)
+	if !info.Recovered {
+		t.Fatalf("pré-condição do teste falhou: parser.Extract deveria recuperar este header")
+	}
+
+	src := &fakeSource{}
+	p, store := newTestPipeline(t, src)
+	local := arquivoLocal(t, "pb999101.png")
+
+	p.inFlight.Store("pb999101.png", true)
+	p.onSendResult("pb", "pb999101.png", local, info, time.Now(),
+		discord.SendResult{GuildID: "g1", ChannelID: "c1", MessageID: "m1"})
+
+	recs, err := store.SearchByGUID("*5416a6f4ea15c7a4782f4bf64dab0182*", 10)
+	if err != nil {
+		t.Fatalf("SearchByGUID falhou: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("esperava 1 linha gravada com o GUID real, veio %d", len(recs))
+	}
+	if recs[0].PlayerName != "JoseToalha" {
+		t.Fatalf("esperava nome real gravado, veio %q", recs[0].PlayerName)
+	}
+	semGUID, err := store.SearchByGUID("unknown", 10)
+	if err != nil {
+		t.Fatalf("SearchByGUID(unknown) falhou: %v", err)
+	}
+	if len(semGUID) != 0 {
+		t.Fatalf("GUID recuperável não deveria cair na sentinela unknown, veio %d linhas", len(semGUID))
 	}
 }

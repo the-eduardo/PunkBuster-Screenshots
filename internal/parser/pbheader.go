@@ -46,6 +46,14 @@ type Info struct {
 	// Empty, pra medir se um header deslocado (RawLine = banner de servidor)
 	// ainda tem o GUID recuperável em outra linha.
 	GUIDLineIndex int
+	// Recovered indica que o header veio deslocado por exatamente uma linha
+	// (GUIDLineIndex == guidLineIndex+1) e o GUID foi lido dali — medido em
+	// produção em 26/09/2026: 57 de 57 casos de header-deslocado tinham o GUID
+	// intacto na linha seguinte ao banner. Quando Recovered é true, Empty é
+	// false e GUID/PlayerName vêm preenchidos normalmente; Reason e RawLine
+	// continuam preenchidos com o diagnóstico do banner, pro log distinguir
+	// "recuperado" de "cabeçalho normal".
+	Recovered bool
 }
 
 // Motivos possíveis de Info.Empty, usados no log de diagnóstico.
@@ -125,11 +133,48 @@ func Extract(data []byte) Info {
 
 	parts := bytes.SplitN(line, []byte(" "), 2)
 	if !guidPattern.Match(parts[0]) {
-		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line), GUIDLineIndex: findGUIDLine(data)}
+		idx := findGUIDLine(data)
+		// Só recupera deslocamento de EXATAMENTE 1 linha (medido em produção:
+		// 57/57 casos), pra não arriscar casar um hex solto no meio do corpo
+		// binário da imagem em headers deslocados por mais de uma linha.
+		if idx == guidLineIndex+1 {
+			if recovered, ok := extractLineAt(data, idx); ok {
+				recovered.Reason = ReasonHeaderDeslocado
+				recovered.RawLine = rawSnippet(line)
+				recovered.GUIDLineIndex = idx
+				recovered.Recovered = true
+				return recovered
+			}
+		}
+		return Info{Empty: true, Reason: ReasonHeaderDeslocado, RawLine: rawSnippet(line), GUIDLineIndex: idx}
 	}
 	info := Info{GUID: string(parts[0])}
 	if len(parts) > 1 {
 		info.PlayerName = string(parts[1])
 	}
 	return info
+}
+
+// extractLineAt aplica o mesmo recorte que Extract usa na linha fixa
+// (TrimSpace/TrimRight("\r")/split no primeiro espaço) na linha idx (0-based)
+// de data, e devolve o Info com GUID/PlayerName preenchidos e ok=true só se o
+// primeiro campo casar guidPattern.
+func extractLineAt(data []byte, idx int) (Info, bool) {
+	lines := bytes.SplitN(data, []byte("\n"), idx+2)
+	if len(lines) <= idx {
+		return Info{}, false
+	}
+	line := bytes.TrimSpace(bytes.TrimRight(lines[idx], "\r"))
+	if len(line) == 0 {
+		return Info{}, false
+	}
+	parts := bytes.SplitN(line, []byte(" "), 2)
+	if !guidPattern.Match(parts[0]) {
+		return Info{}, false
+	}
+	info := Info{GUID: string(parts[0])}
+	if len(parts) > 1 {
+		info.PlayerName = string(parts[1])
+	}
+	return info, true
 }
