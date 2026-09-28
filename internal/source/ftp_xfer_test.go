@@ -244,6 +244,59 @@ func TestFTPOpenCloseDuasVezesNaoTravaOGuard(t *testing.T) {
 	}
 }
 
+// TestFTPOpenSemConexaoLiberaOGuard prova o ramo client==nil do Open: o
+// guard s.xfer ja foi adquirido quando o nil e' detectado, e tem que ser
+// liberado ali. Sem isso, o Delete() seguinte (Sender) pendura para sempre.
+// Espera LIMITADA de proposito: um hang aqui tem que virar FAIL claro, nao
+// timeout de 10min do go test.
+func TestFTPOpenSemConexaoLiberaOGuard(t *testing.T) {
+	s := &FTPSource{}
+	if _, err := s.Open("dir", "a.png"); err == nil {
+		t.Fatal("Open sem conexao deveria retornar erro")
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = s.Delete("dir", "b.png") // erro esperado (sem conexao); so importa NAO pendurar
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Delete() pendurou apos Open() sem conexao — guard xfer nao foi liberado no ramo client==nil")
+	}
+}
+
+// TestFTPOpenErroNoRetrLiberaOGuard prova o ramo de erro do Retr: conexao de
+// controle ja encerrada (Quit) faz o RETR falhar; o guard tem que ser
+// liberado e o Delete() seguinte nao pode pendurar.
+func TestFTPOpenErroNoRetrLiberaOGuard(t *testing.T) {
+	addr, _ := fakeFTPServerComTransferencia(t, []byte("x"))
+	cli, err := ftp.Dial(addr, ftp.DialWithTimeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("ftp.Dial: %v", err)
+	}
+	if err := cli.Login("user", "pass"); err != nil {
+		t.Fatalf("cli.Login: %v", err)
+	}
+	_ = cli.Quit() // fecha a conexao de controle: o proximo Retr falha
+	s := &FTPSource{addr: addr, client: cli}
+
+	if r, err := s.Open("dir", "a.png"); err == nil {
+		r.Close()
+		t.Fatal("Open sobre conexao encerrada deveria retornar erro do Retr")
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = s.Delete("dir", "b.png") // erro esperado; so importa NAO pendurar
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Delete() pendurou apos Open() com erro no Retr — guard xfer nao foi liberado no ramo de erro")
+	}
+}
+
 func indexOf(s []string, v string) (int, bool) {
 	for i, x := range s {
 		if x == v {
