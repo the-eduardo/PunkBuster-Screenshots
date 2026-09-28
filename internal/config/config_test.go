@@ -226,3 +226,85 @@ func TestLoad_RetentionHoursValido(t *testing.T) {
 		t.Fatalf("RetentionHours = %d, esperado 72", cfg.RetentionHours)
 	}
 }
+
+// TestLoad_DebugModeInvalidoFalhaFechado e' o ajuste de 28/09/2026: valor
+// PRESENTE mas invalido (fora do vocabulario de strconv.ParseBool) deixava de
+// cair no default (false) silenciosamente. Neste bot silencio no log e' o
+// retrato da saude, entao um DEBUG_MODE mal escrito escondia o proprio nivel
+// de log que o operador estava tentando ligar pra investigar algo.
+func TestLoad_DebugModeInvalidoFalhaFechado(t *testing.T) {
+	cases := []string{"yes", "on", "sim", "2"}
+	for _, dm := range cases {
+		dm := dm
+		t.Run("debug_mode="+dm, func(t *testing.T) {
+			setRequiredEnv(t, map[string]string{"DEBUG_MODE": dm})
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("DEBUG_MODE=%q deveria falhar o boot (fail-closed), mas Load() passou", dm)
+			}
+		})
+	}
+}
+
+// TestLoad_InsecureHostKeyInvalidoFalhaFechado espelha o teste acima para
+// SFTP_INSECURE_HOST_KEY. Roda em modo "ftp" (base de setRequiredEnv) de
+// proposito: em modo "sftp" sem SFTP_HOST_KEY o abort da linha :95 already
+// dispararia por outro motivo, mascarando se esta validacao especifica
+// esta mesmo em vigor.
+func TestLoad_InsecureHostKeyInvalidoFalhaFechado(t *testing.T) {
+	cases := []string{"yes", "on", "2"}
+	for _, ihk := range cases {
+		ihk := ihk
+		t.Run("insecure_host_key="+ihk, func(t *testing.T) {
+			setRequiredEnv(t, map[string]string{"SFTP_INSECURE_HOST_KEY": ihk})
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("SFTP_INSECURE_HOST_KEY=%q deveria falhar o boot (fail-closed), mas Load() passou", ihk)
+			}
+		})
+	}
+}
+
+// TestLoad_BooleanosAusentesCaemNoDefault trava o ramo vazio: DEBUG_MODE e
+// SFTP_INSECURE_HOST_KEY ausentes/vazios tem que continuar bootando com
+// default false. Sem isso, SFTP_INSECURE_HOST_KEY (que nao existe em
+// producao hoje) abortaria o boot do duck_pbss no proximo deploy.
+func TestLoad_BooleanosAusentesCaemNoDefault(t *testing.T) {
+	setRequiredEnv(t, map[string]string{"DEBUG_MODE": "", "SFTP_INSECURE_HOST_KEY": ""})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() não deveria falhar com booleanos ausentes, erro: %v", err)
+	}
+	if cfg.DebugMode != false {
+		t.Fatalf("DebugMode = %v, esperado default false para DEBUG_MODE ausente", cfg.DebugMode)
+	}
+	if cfg.SFTPInsecureHostKey != false {
+		t.Fatalf("SFTPInsecureHostKey = %v, esperado default false para SFTP_INSECURE_HOST_KEY ausente", cfg.SFTPInsecureHostKey)
+	}
+}
+
+func TestLoad_DebugModeValido(t *testing.T) {
+	trueCases := []string{"true", "1", "TRUE"}
+	for _, dm := range trueCases {
+		dm := dm
+		t.Run("true/"+dm, func(t *testing.T) {
+			setRequiredEnv(t, map[string]string{"DEBUG_MODE": dm})
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() falhou com DEBUG_MODE=%q: %v", dm, err)
+			}
+			if cfg.DebugMode != true {
+				t.Fatalf("DebugMode = %v, esperado true para DEBUG_MODE=%q", cfg.DebugMode, dm)
+			}
+		})
+	}
+
+	setRequiredEnv(t, map[string]string{"DEBUG_MODE": "false"})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() falhou com DEBUG_MODE=false: %v", err)
+	}
+	if cfg.DebugMode != false {
+		t.Fatalf("DebugMode = %v, esperado false para DEBUG_MODE=false", cfg.DebugMode)
+	}
+}
