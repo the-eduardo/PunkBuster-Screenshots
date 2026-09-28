@@ -30,6 +30,19 @@ type FTPSource struct {
 
 	mu     sync.Mutex
 	client *ftp.ServerConn
+
+	// xfer serializa a janela INTEIRA de uma transferencia de dados (Retr ->
+	// leitura -> Close, quando o "226 closing data connection" pendente e'
+	// consumido) contra qualquer outro comando na conexao de CONTROLE. mu nao
+	// cobre essa janela: Open() devolve e libera mu assim que o RETR e' emitido,
+	// e a leitura roda na goroutine do poller enquanto Delete() roda na
+	// goroutine do Sender (via onSendResult). Sem este guard, um DELE emitido
+	// nessa janela le o 226 pendente como se fosse a resposta do DELE e
+	// desalinha permanentemente todas as respostas seguintes na conexao de
+	// controle — o mesmo perigo que pipeline.go:183 ja documenta pro MDTM,
+	// so' que no caminho cross-goroutine, que ordenacao dentro de uma unica
+	// goroutine nao resolve.
+	xfer sync.Mutex
 }
 
 func NewFTPSource(addr, user, pass string) *FTPSource {
@@ -101,12 +114,37 @@ func (s *FTPSource) List(dir string) ([]FileInfo, error) {
 }
 
 func (s *FTPSource) Open(dir, name string) (io.ReadCloser, error) {
+	s.xfer.Lock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.client == nil {
+		s.xfer.Unlock()
 		return nil, errFTPNotConnected
 	}
-	return s.client.Retr(dir + "/" + name)
+	resp, err := s.client.Retr(dir + "/" + name)
+	if err != nil {
+		s.xfer.Unlock()
+		return nil, err
+	}
+	return &xferCloser{ReadCloser: resp, unlock: s.xfer.Unlock}, nil
+}
+
+// xferCloser libera o guard s.xfer no PRIMEIRO Close, e so' nesse. Idempotencia
+// e' obrigatoria aqui: processFile (pipeline.go) fecha o handle duas vezes de
+// proposito (defer + fechamento explicito antes do proximo comando de
+// controle) — o Response.Close() do jlaffaye ja' e' idempotente (campo
+// interno "closed"), mas sync.Mutex nao e': um segundo Unlock() sem Lock()
+// correspondente entra em panic.
+type xferCloser struct {
+	io.ReadCloser
+	once   sync.Once
+	unlock func()
+}
+
+func (x *xferCloser) Close() error {
+	err := x.ReadCloser.Close()
+	x.once.Do(x.unlock)
+	return err
 }
 
 func (s *FTPSource) ModTime(dir, name string) (time.Time, error) {
@@ -122,6 +160,8 @@ func (s *FTPSource) ModTime(dir, name string) (time.Time, error) {
 }
 
 func (s *FTPSource) Delete(dir, name string) error {
+	s.xfer.Lock()
+	defer s.xfer.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.client == nil {
