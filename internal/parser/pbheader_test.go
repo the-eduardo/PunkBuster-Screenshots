@@ -185,6 +185,11 @@ func TestFindGUIDLine_HeaderDeslocado(t *testing.T) {
 	if info.Reason != ReasonHeaderDeslocado {
 		t.Fatalf("esperava Reason=%q mesmo recuperado, veio %q", ReasonHeaderDeslocado, info.Reason)
 	}
+	// RawLine mantem o banner pro diagnostico (drenagem 28/09/2026: a mutacao
+	// que removia a atribuicao de RawLine no caminho recuperado sobrevivia).
+	if !strings.Contains(info.RawLine, "131.196.199.123:25220") {
+		t.Fatalf("esperava RawLine com o banner do servidor mesmo recuperado, veio %q", info.RawLine)
+	}
 }
 
 // TestFindGUIDLine_DeslocamentoDeDuasLinhasNaoRecupera prova o limite

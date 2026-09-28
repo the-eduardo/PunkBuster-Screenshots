@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"pbss/internal/discord"
 	"pbss/internal/parser"
@@ -747,6 +749,83 @@ func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
 	}
 	if strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
 		t.Fatalf("GUID recuperável não deveria disparar o WARN de sem-atribuição, log: %q", logado)
+	}
+}
+
+// jobEnfileirado le o SendJob que processFile empurrou para a fila do Sender.
+// O canal Sender.jobs nao e' exportado e o pacote discord nao oferece leitura;
+// como o unico jeito de observar o GUID que processFile REALMENTE manda para o
+// envio e' olhar o job, o helper (so' de teste) le o canal por reflect/unsafe,
+// sem tocar producao. Falha alto se nao houver job.
+func jobEnfileirado(t *testing.T, s *discord.Sender) discord.SendJob {
+	t.Helper()
+	v := reflect.ValueOf(s).Elem().FieldByName("jobs")
+	if !v.IsValid() {
+		t.Fatalf("Sender nao tem mais o campo jobs — atualizar jobEnfileirado")
+	}
+	ch := reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
+	got, ok := ch.TryRecv()
+	if !ok {
+		t.Fatalf("processFile nao enfileirou nenhum job")
+	}
+	return got.Interface().(discord.SendJob)
+}
+
+// TestProcessFileEnfileiraJobComGUIDConformeRecuperacao e' o teste de FIACAO
+// de processFile -> SendJob (drenagem de 28/09/2026: a mutacao "o ramo
+// Recovered sobrescreve info.GUID com a sentinela" sobrevivia, porque os
+// outros testes so olham o log ou chamam onSendResult direto). Par positivo
+// + contraprova: header recuperavel -> GUID real; header NAO recuperavel
+// (GUID a 2 linhas do banner) -> sentinela "unknown".
+func TestProcessFileEnfileiraJobComGUIDConformeRecuperacao(t *testing.T) {
+	casos := []struct {
+		nome       string
+		linhas     []string
+		wantGUID   string
+		wantPlayer string
+	}{
+		{
+			nome: "recuperavel_1_linha",
+			linhas: []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+				"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+				"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha"},
+			wantGUID:   "*5416a6f4ea15c7a4782f4bf64dab0182*",
+			wantPlayer: "JoseToalha",
+		},
+		{
+			nome: "nao_recuperavel_2_linhas",
+			linhas: []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+				"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+				"outro banner qualquer sem GUID",
+				"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha"},
+			wantGUID:   "unknown",
+			wantPlayer: "(sem GUID)",
+		},
+	}
+	for _, c := range casos {
+		c := c
+		t.Run(c.nome, func(t *testing.T) {
+			header := strings.Join(c.linhas, "\n") + "\n"
+			data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+			p := &Pipeline{
+				ServerLabel: "servidor-de-teste",
+				SFTPFolder:  "pb",
+				TempDir:     t.TempDir(),
+				Src:         &fakeSourceContent{data: data},
+				Sender:      discord.NewSender(nil, 1),
+			}
+			f := source.FileInfo{Name: "pb999102.png", Size: int64(len(data)), ModTime: time.Now()}
+			if ok := p.processFile(f); !ok {
+				t.Fatalf("processFile deveria ter enfileirado o arquivo")
+			}
+			job := jobEnfileirado(t, p.Sender)
+			if job.GUID != c.wantGUID {
+				t.Errorf("job.GUID = %q, esperado %q", job.GUID, c.wantGUID)
+			}
+			if job.PlayerName != c.wantPlayer {
+				t.Errorf("job.PlayerName = %q, esperado %q", job.PlayerName, c.wantPlayer)
+			}
+		})
 	}
 }
 
