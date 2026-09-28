@@ -154,10 +154,11 @@ func TestExtract_RawLineVazioQuandoArquivoTruncado(t *testing.T) {
 // TestExtract_GUIDComAsteriscos fecha a lacuna de que nenhuma fixture usava a
 // forma real de produção (o pbsvss grava o GUID como *<32 hex>*, 34 chars) —
 // essa lacuna é o que deixou passar o bug do /pbss search corrigido em 01/09.
-// TestFindGUIDLine_HeaderDeslocado reproduz o caso do achado de 13/09/2026: a
+// TestFindGUIDLine_HeaderDeslocado reproduz o caso do achado de 13/09/2026 e
+// atualizado em 26/09/2026 (medição em produção: 57/57 casos de
+// header-deslocado tinham o GUID intacto na linha seguinte ao banner): a
 // linha 4 é o banner do servidor (header deslocado), mas o GUID aparece
-// intacto na linha seguinte. GUIDLineIndex tem que apontar pra ela, pra medir
-// se o header deslocado ainda tem GUID recuperável em outro lugar.
+// intacto na linha seguinte — Extract recupera esse GUID em vez de descartar.
 func TestFindGUIDLine_HeaderDeslocado(t *testing.T) {
 	linhas := []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
 		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
@@ -166,11 +167,53 @@ func TestFindGUIDLine_HeaderDeslocado(t *testing.T) {
 	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
 
 	info := Extract(data)
-	if !info.Empty {
-		t.Fatalf("deveria sinalizar Empty para a linha de banner")
+	if info.Empty {
+		t.Fatalf("GUID recuperável na linha seguinte não deveria sinalizar Empty")
+	}
+	if info.GUID != "*5416a6f4ea15c7a4782f4bf64dab0182*" {
+		t.Fatalf("GUID incorreto: %q", info.GUID)
+	}
+	if info.PlayerName != "JoseToalha" {
+		t.Fatalf("nome incorreto: %q", info.PlayerName)
 	}
 	if info.GUIDLineIndex != 5 {
 		t.Fatalf("esperava GUIDLineIndex=5, veio %d", info.GUIDLineIndex)
+	}
+	if !info.Recovered {
+		t.Fatalf("esperava Recovered=true")
+	}
+	if info.Reason != ReasonHeaderDeslocado {
+		t.Fatalf("esperava Reason=%q mesmo recuperado, veio %q", ReasonHeaderDeslocado, info.Reason)
+	}
+	// RawLine mantem o banner pro diagnostico (drenagem 28/09/2026: a mutacao
+	// que removia a atribuicao de RawLine no caminho recuperado sobrevivia).
+	if !strings.Contains(info.RawLine, "131.196.199.123:25220") {
+		t.Fatalf("esperava RawLine com o banner do servidor mesmo recuperado, veio %q", info.RawLine)
+	}
+}
+
+// TestFindGUIDLine_DeslocamentoDeDuasLinhasNaoRecupera prova o limite
+// explícito da recuperação: só desloca-mento de EXATAMENTE 1 linha é aceito
+// (idx == guidLineIndex+1). Aqui o GUID válido está 2 linhas depois do banner
+// (índice 6), então Extract não deve recuperar — continua Empty=true, igual
+// ao comportamento anterior a esta mudança.
+func TestFindGUIDLine_DeslocamentoDeDuasLinhasNaoRecupera(t *testing.T) {
+	linhas := []string{"BF4", "svss", "pedro.fragify.net:2025", "2026-06-09 18:50:49",
+		"944369 131.196.199.123:25220 !          !DuckDuck Op.Locker.60hp",
+		"outro banner qualquer sem GUID",
+		"*5416a6f4ea15c7a4782f4bf64dab0182* JoseToalha"}
+	header := strings.Join(linhas, "\n") + "\n"
+	data := append([]byte(header), []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}...)
+
+	info := Extract(data)
+	if !info.Empty {
+		t.Fatalf("deslocamento de 2 linhas não deveria recuperar, veio GUID=%q nome=%q", info.GUID, info.PlayerName)
+	}
+	if info.Recovered {
+		t.Fatalf("Recovered não deveria vir true pra deslocamento de 2 linhas")
+	}
+	if info.GUIDLineIndex != 6 {
+		t.Fatalf("esperava GUIDLineIndex=6 (encontrado, mas fora do alcance de recuperação), veio %d", info.GUIDLineIndex)
 	}
 }
 
