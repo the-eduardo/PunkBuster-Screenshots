@@ -91,7 +91,17 @@ func Load() (*Config, error) {
 	// bot nao sobe, a menos que ignorar seja pedido explicitamente. So' vale no
 	// modo sftp — o FTP simples nao tem host key.
 	cfg.SFTPHostKey = get("SFTP_HOST_KEY")
-	cfg.SFTPInsecureHostKey, _ = strconv.ParseBool(get("SFTP_INSECURE_HOST_KEY"))
+	rawInsecureHostKey := get("SFTP_INSECURE_HOST_KEY")
+	if rawInsecureHostKey != "" {
+		ihk, err := strconv.ParseBool(rawInsecureHostKey)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"SFTP_INSECURE_HOST_KEY=%q invalido: use true ou false. "+
+					"Sem isso o bypass da verificacao de host key ficaria desligado em silencio",
+				truncateForError(rawInsecureHostKey))
+		}
+		cfg.SFTPInsecureHostKey = ihk
+	}
 	if cfg.SelectFTPMode == "sftp" && cfg.SFTPHostKey == "" && !cfg.SFTPInsecureHostKey {
 		return nil, fmt.Errorf(
 			"SELECT_FTP_MODE=sftp exige SFTP_HOST_KEY (chave publica do servidor). " +
@@ -141,7 +151,18 @@ func Load() (*Config, error) {
 		cfg.RetentionHours = rh
 	}
 
-	cfg.DebugMode, _ = strconv.ParseBool(get("DEBUG_MODE"))
+	rawDebug := get("DEBUG_MODE")
+	if rawDebug != "" {
+		dm, err := strconv.ParseBool(rawDebug)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"DEBUG_MODE=%q invalido: use true ou false. "+
+					"Sem isso o debug ficaria desligado em silencio, e neste bot "+
+					"silencio no log se confunde com saude",
+				truncateForError(rawDebug))
+		}
+		cfg.DebugMode = dm
+	}
 
 	return &cfg, nil
 }
