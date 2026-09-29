@@ -34,10 +34,12 @@ const embedDescBudget = 3950
 
 // contentBudget é o teto que respondEphemeral respeita no Content, com
 // margem sob o limite real do Discord (2000) pra caber o aviso de corte. A
-// option "termo" do /pbss não define MaxLength, então o Discord aceita até
-// 6000 chars — e um termo longo nunca casa em nenhum LIKE (o maior
-// player_name em produção tem 73 chars), então cai sempre no ramo "nenhum
-// resultado", ecoando o termo cru no Content. Contar bytes é a mesma escolha
+// option "termo" do /pbss hoje tem MaxLength (termoMaxLength), mas o clamp
+// continua como defesa em profundidade: um comando registrado antes dele, ou
+// um client que ignore o limite, ainda pode mandar até 6000 chars — e um termo
+// longo nunca casa em nenhum LIKE (o maior player_name em produção tem 73
+// chars), então cai sempre no ramo "nenhum resultado", ecoando o termo cru no
+// Content. Contar bytes é a mesma escolha
 // conservadora do embedDescBudget acima: erra pro lado seguro.
 const contentBudget = 1900
 
@@ -85,10 +87,16 @@ func NewHandler(store *storage.Store) *Handler {
 	return &Handler{Store: store, states: make(map[string]*searchState)}
 }
 
-// Register cria o comando de aplicação. guildID vazio registra globalmente
-// (demora até 1h pra propagar); um guildID específico propaga na hora, útil pra testes.
-func (h *Handler) Register(s *discordgo.Session, guildID string) error {
-	cmd := &discordgo.ApplicationCommand{
+// termoMaxLength limita as options "termo" do /pbss (search e last). Sem ele o
+// Discord aceita até 6000 chars num termo que nunca casa (maior player_name em
+// produção: 73 chars; GUID com asteriscos: 34) e o eco vai inteiro pro
+// Content — o clampContent segura o estouro, isto aqui corta na origem.
+const termoMaxLength = 100
+
+// pbssCommand monta a definição do /pbss. Separada do Register pra suíte
+// inspecionar a struct sem rede.
+func pbssCommand() *discordgo.ApplicationCommand {
+	return &discordgo.ApplicationCommand{
 		Name:        "pbss",
 		Description: "Consulta o histórico de screenshots do PunkBuster",
 		Options: []*discordgo.ApplicationCommandOption{
@@ -97,7 +105,7 @@ func (h *Handler) Register(s *discordgo.Session, guildID string) error {
 				Name:        "search",
 				Description: "Busca screenshots por nome ou GUID",
 				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionString, Name: "termo", Description: "Nome do jogador ou GUID", Required: true},
+					{Type: discordgo.ApplicationCommandOptionString, Name: "termo", Description: "Nome do jogador ou GUID", Required: true, MaxLength: termoMaxLength},
 				},
 			},
 			{
@@ -105,7 +113,7 @@ func (h *Handler) Register(s *discordgo.Session, guildID string) error {
 				Name:        "last",
 				Description: "Mostra os últimos screenshots de um jogador, sem paginação",
 				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionString, Name: "termo", Description: "Nome do jogador ou GUID", Required: true},
+					{Type: discordgo.ApplicationCommandOptionString, Name: "termo", Description: "Nome do jogador ou GUID", Required: true, MaxLength: termoMaxLength},
 					{Type: discordgo.ApplicationCommandOptionInteger, Name: "quantidade", Description: "Quantos mostrar (padrão 5, máx 20)", Required: false},
 				},
 			},
@@ -116,7 +124,15 @@ func (h *Handler) Register(s *discordgo.Session, guildID string) error {
 			},
 		},
 	}
-	_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, cmd)
+}
+
+// Register cria o comando de aplicação. guildID vazio registra globalmente
+// (demora até 1h pra propagar); um guildID específico propaga na hora, útil pra testes.
+// ApplicationCommandCreate é upsert SÓ do /pbss, e roda em todo boot — o app
+// Discord é compartilhado com o bf4db-bot, então NUNCA trocar por bulk
+// overwrite (apagaria os comandos do outro bot).
+func (h *Handler) Register(s *discordgo.Session, guildID string) error {
+	_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, pbssCommand())
 	return err
 }
 

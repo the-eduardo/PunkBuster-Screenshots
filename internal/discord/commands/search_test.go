@@ -2,7 +2,9 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -243,5 +245,96 @@ func TestHandleInteractionRecuperaDePanicNoHandler(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "index out of range") {
 		t.Fatalf("esperava o valor original do panic preservado no log, log veio: %q", logBuf.String())
+	}
+}
+
+// opcoesTermo devolve a option "termo" de cada subcomando do /pbss que a tem,
+// indexada pelo nome do subcomando.
+func opcoesTermo(cmd *discordgo.ApplicationCommand) map[string]*discordgo.ApplicationCommandOption {
+	termos := make(map[string]*discordgo.ApplicationCommandOption)
+	for _, sub := range cmd.Options {
+		for _, o := range sub.Options {
+			if o.Name == "termo" {
+				termos[sub.Name] = o
+			}
+		}
+	}
+	return termos
+}
+
+// ITEM 16 (enxame 29/09/2026): sem MaxLength o Discord aceita até 6000 chars
+// na option "termo"; as DUAS (search e last) têm que sair com 100.
+func TestPbssCommandTermoTemMaxLength100(t *testing.T) {
+	termos := opcoesTermo(pbssCommand())
+	for _, sub := range []string{"search", "last"} {
+		o, ok := termos[sub]
+		if !ok {
+			t.Errorf("/pbss %s sem option termo", sub)
+			continue
+		}
+		if o.MaxLength != 100 {
+			t.Errorf("/pbss %s termo: MaxLength = %d, quero 100", sub, o.MaxLength)
+		}
+	}
+	if len(termos) != 2 {
+		t.Errorf("esperava option termo em exatamente 2 subcomandos (search, last), achei %d", len(termos))
+	}
+}
+
+// capturaRequisicaoTransport guarda método, caminho e corpo da última
+// requisição e responde 204, sem rede.
+type capturaRequisicaoTransport struct {
+	metodo, caminho string
+	corpo           []byte
+}
+
+func (c *capturaRequisicaoTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.metodo, c.caminho = r.Method, r.URL.Path
+	if r.Body != nil {
+		c.corpo, _ = io.ReadAll(r.Body)
+	}
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Status:     "204 No Content",
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+		Header:     make(http.Header),
+		Request:    r,
+	}, nil
+}
+
+// Fiação: o MaxLength só vale se é o pbssCommand() que o Register manda pro
+// Discord — e por POST de UM comando (upsert), nunca PUT em lote: o app é
+// compartilhado com o bf4db-bot e um bulk overwrite apagaria os comandos dele.
+func TestRegisterEnviaPbssCommandPorUpsertComMaxLength(t *testing.T) {
+	s, err := discordgo.New("Bot faketoken")
+	if err != nil {
+		t.Fatalf("discordgo.New: %v", err)
+	}
+	tr := &capturaRequisicaoTransport{}
+	s.Client.Transport = tr
+	s.State.User = &discordgo.User{ID: "111"}
+
+	// O 204 sem corpo faz o discordgo reclamar no unmarshal da resposta; o que
+	// importa aqui é o que SAIU, não o retorno.
+	_ = NewHandler(nil).Register(s, "222")
+
+	if tr.metodo != http.MethodPost {
+		t.Fatalf("Register usou %s %s; tem que ser POST (upsert de um comando), nunca PUT em lote", tr.metodo, tr.caminho)
+	}
+	if !strings.HasSuffix(tr.caminho, "/applications/111/guilds/222/commands") {
+		t.Fatalf("Register foi pra %q, esperava o endpoint de comandos da guild", tr.caminho)
+	}
+	var enviado discordgo.ApplicationCommand
+	if err := json.Unmarshal(tr.corpo, &enviado); err != nil {
+		t.Fatalf("corpo enviado não é ApplicationCommand: %v (%q)", err, tr.corpo)
+	}
+	if enviado.Name != "pbss" {
+		t.Fatalf("Register enviou o comando %q, esperava pbss", enviado.Name)
+	}
+	termos := opcoesTermo(&enviado)
+	for _, sub := range []string{"search", "last"} {
+		if o, ok := termos[sub]; !ok || o.MaxLength != 100 {
+			t.Errorf("payload do Register: /pbss %s termo sem MaxLength 100 (%+v)", sub, o)
+		}
 	}
 }
