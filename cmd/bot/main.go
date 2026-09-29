@@ -20,6 +20,19 @@ import (
 	"pbss/internal/storage"
 )
 
+// senderCloseTimeout é quanto o shutdown espera a fila do Sender drenar. Cabe
+// no stop_grace_period de 30s do serviço server1 no docker-compose.yml, com 5s
+// de folga pro resto do shutdown (fechar origem, sessão e sqlite) antes do
+// SIGKILL. Com 8s (o valor antigo, dimensionado pro default de 10s do Docker)
+// o stop_grace_period ficava inerte: o próprio processo desistia da fila bem
+// antes do Docker matar. Os 25s cobrem o backoff inteiro de um job que falha
+// (1+4+9 = 14s — sender.go só dorme entre tentativas, nunca depois da última)
+// mais o tempo das chamadas HTTP em latência normal; não cobrem 4 timeouts
+// seguidos do cliente (30s cada), e aí o job morre com o processo como antes
+// — o arquivo remoto só é apagado após envio confirmado, então é re-baixado
+// no próximo boot. O teste em main_test.go amarra este valor ao compose.
+const senderCloseTimeout = 25 * time.Second
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -77,7 +90,7 @@ func main() {
 
 	sender := discord.NewSender(session, 500)
 	go sender.Run()
-	defer sender.Close(8 * time.Second) // cabe no grace de shutdown de 10s do Docker
+	defer sender.Close(senderCloseTimeout) // cabe no stop_grace_period de 30s do compose, com 5s de folga
 
 	pipeline := &queue.Pipeline{
 		ServerLabel:    cfg.ServerName,
