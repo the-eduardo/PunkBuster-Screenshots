@@ -150,7 +150,8 @@ func (s *Sender) process(job SendJob) {
 			// retenção durante uma indisponibilidade prolongada do Discord, ver
 			// pipeline.go:236). Retentar não resolve — o arquivo não vai
 			// reaparecer em segundos — e as maxAttempts tentativas bloqueariam a
-			// fila serial (Run, sender.go:105) por até 30s à toa.
+			// fila serial (Run, sender.go:105) à toa: 1+4+9 = 14s de backoff
+			// (não há sono depois da última tentativa) mais as 4 chamadas HTTP.
 			job.Done(SendResult{Err: fmt.Errorf("arquivo local sumiu antes do envio: %w", err)})
 			return
 		}

@@ -7,6 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: duck_pbss
     restart: unless-stopped
+    # SIGTERM -> SIGKILL em 30s (default do Docker = 10s): da tempo do Sender
+    # drenar a fila (senderCloseTimeout = 25s em cmd/bot/main.go, amarrado
+    # a este valor por cmd/bot/main_test.go) e sobram 5s pro resto do shutdown.
+    stop_grace_period: 30s
     env_file:
       - .env
     environment:
