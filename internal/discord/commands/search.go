@@ -359,6 +359,14 @@ func (h *Handler) advancePage(msgID, customID string) (*discordgo.MessageEmbed, 
 
 func (h *Handler) lookup(termo string, limit int) ([]storage.ScreenshotRecord, error) {
 	termo = strings.TrimSpace(termo)
+	// Termo vazio após o trim cairia em SearchByName(""), cujo LIKE '%%' casa
+	// TODA a tabela e devolve screenshots de jogadores sem relação nenhuma com
+	// a consulta — o defeito que o escapeLike existe pra impedir, por outra
+	// porta. Nenhum player_name real é vazio (RecordScreenshot não indexa
+	// nome vazio, screenshots.go:54), então não há resultado legítimo a perder.
+	if termo == "" {
+		return nil, nil
+	}
 	// O PunkBuster grava o GUID entre asteriscos no header (parser/pbheader.go),
 	// e o bot exibe o GUID assim mesmo (formatEntries abaixo, sender.go) — então
 	// o usuário pode colar o termo com ou sem os asteriscos. Aparamos as pontas
