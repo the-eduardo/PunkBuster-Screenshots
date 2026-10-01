@@ -54,3 +54,55 @@ func TestRunSearchTermoLongoSaiClampado(t *testing.T) {
 		t.Fatalf("esperava o aviso de truncamento no Content real, veio sufixo: %q", resp.Data.Content[len(resp.Data.Content)-40:])
 	}
 }
+
+// TestRunSearchTermoEmBrancoRespondeNenhumResultado é o teste de FIAÇÃO do
+// guard de termo vazio em lookup (30/09/2026): TestLookupTermoEmBrancoNaoRetornaTudo
+// prova a função pura, mas nada provava que o /pbss search de verdade (via
+// HandleInteraction) responde "nenhum resultado" em vez do embed paginado com
+// screenshots de jogadores sem relação nenhuma com o termo. Cobre search e last,
+// que compartilham o mesmo lookup.
+func TestRunSearchTermoEmBrancoRespondeNenhumResultado(t *testing.T) {
+	st, err := storage.Open(filepath.Join(t.TempDir(), "pbss.db"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.RecordScreenshot(storage.ScreenshotRecord{
+		GUID: "guidA", PlayerName: "JoseToalha", FileName: "a.png", Server: "srv",
+	}); err != nil {
+		t.Fatalf("RecordScreenshot: %v", err)
+	}
+
+	subcomandos := []string{"search", "last"}
+	for _, sub := range subcomandos {
+		t.Run(sub, func(t *testing.T) {
+			session, tr := sessaoCapturando(t)
+			h := NewHandler(st)
+			i := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{
+				ID: "1", Token: "tok-fake", Type: discordgo.InteractionApplicationCommand,
+				Data: discordgo.ApplicationCommandInteractionData{
+					Name: "pbss",
+					Options: []*discordgo.ApplicationCommandInteractionDataOption{
+						{Name: sub, Options: []*discordgo.ApplicationCommandInteractionDataOption{
+							{Name: "termo", Type: discordgo.ApplicationCommandOptionString, Value: "   "},
+						}},
+					},
+				},
+			}}
+
+			h.HandleInteraction(session, i)
+
+			resp := tr.resposta(t)
+			if resp.Data == nil {
+				t.Fatal("resposta sem Data")
+			}
+			if !strings.HasPrefix(resp.Data.Content, "Nenhum screenshot encontrado") {
+				t.Fatalf("esperava o ramo 'nenhum resultado', veio Content: %.80q", resp.Data.Content)
+			}
+			if len(resp.Data.Embeds) != 0 {
+				t.Fatalf("esperava 0 embeds pro termo em branco, veio %d", len(resp.Data.Embeds))
+			}
+		})
+	}
+}
