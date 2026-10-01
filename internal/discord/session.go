@@ -21,6 +21,24 @@ var openRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time
 // gerar um token novo no Developer Portal.
 var ErrInvalidToken = fmt.Errorf("token do bot inválido ou revogado (Discord close 4004)")
 
+// isInvalidToken reconhece o close 4004 do gateway pelo prefixo que o
+// gorilla/websocket imprime ("websocket: close 4004: ..."), em vez de procurar
+// "4004" solto no texto do erro: um net.OpError de read/write inclui a porta
+// local (ex. "read tcp 172.17.0.2:40044->..."), e a faixa efêmera do Linux tem
+// vários valores que casam essa substring por coincidência.
+func isInvalidToken(err error) bool {
+	return strings.Contains(err.Error(), "websocket: close 4004")
+}
+
+// wrapInvalidToken envolve a causa em ErrInvalidToken preservando errors.Is
+// (via %w) e o texto original do erro (via %v), pra quem chama Open() saber
+// distinguir "token revogado" de "falha de rede genérica" sem perder a causa
+// no log — extraído em função própria pra o teste exercitar exatamente o que
+// Open() executa, não uma cópia paralela da expressão.
+func wrapInvalidToken(cause error) error {
+	return fmt.Errorf("%w: %v", ErrInvalidToken, cause)
+}
+
 // Open cria e abre uma sessão persistente com o Discord. A sessão deve ser aberta
 // uma única vez no início do processo, não a cada ciclo de polling.
 func Open(token string) (*discordgo.Session, error) {
@@ -46,8 +64,8 @@ func Open(token string) (*discordgo.Session, error) {
 		if lastErr == nil {
 			break
 		}
-		if strings.Contains(lastErr.Error(), "4004") {
-			return nil, ErrInvalidToken
+		if isInvalidToken(lastErr) {
+			return nil, wrapInvalidToken(lastErr)
 		}
 		if attempt >= len(openRetryDelays) {
 			return nil, fmt.Errorf("falha ao abrir conexão com o discord após %d tentativas: %w", attempt+1, lastErr)
