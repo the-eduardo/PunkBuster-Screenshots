@@ -750,6 +750,9 @@ func TestProcessFileHeaderDeslocadoRegistraGUIDLineIndex(t *testing.T) {
 	if strings.Contains(logado, "cabeçalho sem GUID na linha esperada") {
 		t.Fatalf("GUID recuperável não deveria disparar o WARN de sem-atribuição, log: %q", logado)
 	}
+	if !strings.Contains(logado, "131.196.199.123:25220") {
+		t.Fatalf("esperava o banner da linha 4 (linha4=...) no WARN de recuperação, log: %q", logado)
+	}
 }
 
 // jobEnfileirado le o SendJob que processFile empurrou para a fila do Sender.
