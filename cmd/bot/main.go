@@ -33,6 +33,18 @@ import (
 // no próximo boot. O teste em main_test.go amarra este valor ao compose.
 const senderCloseTimeout = 25 * time.Second
 
+// logLevel resolve o nível do handler de log a partir de DEBUG_MODE. Extraído
+// de main() pra ser testável sem subir o processo inteiro: até 02/10/2026
+// DEBUG_MODE não tinha nenhum slog.Debug consumindo o nível Debug no repo
+// inteiro, e o único efeito vivo da variável era poder abortar o boot
+// (fail-closed de 28/09) — risco sem benefício.
+func logLevel(debug bool) slog.Level {
+	if debug {
+		return slog.LevelDebug
+	}
+	return slog.LevelInfo
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -40,11 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	level := slog.LevelInfo
-	if cfg.DebugMode {
-		level = slog.LevelDebug
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.DebugMode)})))
 
 	store, err := storage.Open(cfg.DBPath)
 	if err != nil {

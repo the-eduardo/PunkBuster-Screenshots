@@ -105,6 +105,8 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			}
 		}
 
+		slog.Debug("poll concluido", "listados", len(files), "enfileirados", pending, "falhos", failed)
+
 		switch {
 		case pending > 0:
 			// Backlog real enfileirado: volta imediato pro topo do loop pra checar
@@ -246,6 +248,7 @@ func (p *Pipeline) processFile(f source.FileInfo) bool {
 		},
 	})
 	queued = true
+	slog.Debug("screenshot enfileirado", "arquivo", f.Name, "guid", info.GUID, "jogador", info.PlayerName)
 	return true
 }
 

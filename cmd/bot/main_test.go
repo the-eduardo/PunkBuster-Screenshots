@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -118,5 +119,50 @@ func TestMainPassaSenderCloseTimeoutProSenderClose(t *testing.T) {
 	}
 	if comConstante != calls {
 		t.Fatalf("main.go chama sender.Close %d vez(es), só %d com senderCloseTimeout", calls, comConstante)
+	}
+}
+
+// DEBUG_MODE só tem efeito vivo no repo através do nível do handler de log —
+// até 02/10/2026 não havia nenhum slog.Debug consumindo esse nível, e o único
+// efeito real da variável era poder abortar o boot (fail-closed de 28/09).
+func TestLogLevel(t *testing.T) {
+	if got := logLevel(true); got != slog.LevelDebug {
+		t.Errorf("logLevel(true) = %v, esperado %v", got, slog.LevelDebug)
+	}
+	if got := logLevel(false); got != slog.LevelInfo {
+		t.Errorf("logLevel(false) = %v, esperado %v", got, slog.LevelInfo)
+	}
+}
+
+// Fiação: logLevel só vale se é ela que decide o Level do handler em main().
+// Um literal no call site (ex.: slog.LevelInfo direto, ignorando
+// cfg.DebugMode) passaria em TestLogLevel sem conectar DEBUG_MODE a nada.
+func TestMainUsaLogLevelParaNivelDoHandler(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	achou := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Level" {
+			return true
+		}
+		call, ok := kv.Value.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "logLevel" {
+			achou = true
+		}
+		return true
+	})
+	if !achou {
+		t.Fatal("main.go não usa logLevel(...) pra montar o Level do handler — DEBUG_MODE pode ter ficado desconectado do nível de log")
 	}
 }
