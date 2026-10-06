@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -105,8 +106,45 @@ func (s *Sender) Enqueue(job SendJob) {
 func (s *Sender) Run() {
 	defer close(s.done)
 	for job := range s.jobs {
-		s.processFn(job)
+		s.runJob(job)
 	}
+}
+
+// runJob isola o processamento de UM job: um panic aqui não pode matar o
+// processo inteiro e levar junto a fila em memória (até 500 jobs já
+// baixados). Mesmo desenho do recover de HandleInteraction
+// (commands/search.go:157), aceito pelo Eduardo em 22/08/2026.
+//
+// O sync.Once é o que torna a recuperação segura: se o panic aconteceu DEPOIS
+// de s.processFn já ter chamado Done (ex.: dentro do próprio onSendResult do
+// pipeline), chamar Done de novo gravaria uma SEGUNDA linha no índice sqlite
+// pro mesmo screenshot. Se aconteceu ANTES, o Done com erro é obrigatório:
+// sem ele o pipeline nunca roda p.inFlight.Delete (queue/pipeline.go) e o
+// arquivo some do poller para sempre — trocaríamos a morte do processo por um
+// vazamento silencioso.
+func (s *Sender) runJob(job SendJob) {
+	if orig := job.Done; orig != nil {
+		var once sync.Once
+		job.Done = func(res SendResult) { once.Do(func() { orig(res) }) }
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		slog.Error("panic ao enviar screenshot; job abandonado, arquivo preservado pra nova tentativa",
+			"arquivo", job.FileName, "panic", r, "stack", string(debug.Stack()))
+		if job.Done == nil {
+			return
+		}
+		// Recover aninhado: a própria recuperação não pode virar a causa da
+		// morte do processo (Done chama onSendResult, que toca sqlite e I/O).
+		func() {
+			defer func() { _ = recover() }()
+			job.Done(SendResult{Err: fmt.Errorf("panic no envio do screenshot: %v", r)})
+		}()
+	}()
+	s.processFn(job)
 }
 
 // Close para de aceitar jobs novos e espera a fila atual drenar, até o prazo
