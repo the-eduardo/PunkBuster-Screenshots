@@ -226,7 +226,7 @@ func (p *Pipeline) processFile(f source.FileInfo) bool {
 		// banner e já está em info.GUID/PlayerName — a visibilidade do desvio
 		// não pode desaparecer junto com o problema, então o WARN muda de tom
 		// (recuperado, não perdido) mas continua logando.
-		slog.Warn("header deslocado, GUID recuperado na linha seguinte", "arquivo", f.Name, "guid_na_linha", info.GUIDLineIndex)
+		slog.Warn("header deslocado, GUID recuperado na linha seguinte", "arquivo", f.Name, "linha4", info.RawLine, "guid_na_linha", info.GUIDLineIndex)
 	case info.Empty:
 		slog.Warn("cabeçalho sem GUID na linha esperada, enviando sem atribuição de jogador", "arquivo", f.Name, "motivo", info.Reason, "linha4", info.RawLine, "guid_na_linha", info.GUIDLineIndex)
 		info.GUID = "unknown"
