@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -467,6 +468,106 @@ func TestRunNaoRemartelaQuandoDownloadFalha(t *testing.T) {
 
 	if calls := src.calls(); calls > 8 {
 		t.Errorf("List() chamado %d vezes em 300ms — sem o guard de backoff, download que sempre falha vira busy-loop sem sleep", calls)
+	}
+}
+
+// fakeSourceOpenErr lista sempre o mesmo screenshot e falha o Open com o erro
+// configurado — usado para distinguir, no nível de log, "o Sender confirmou e
+// apagou o remoto entre o List e este Open" (fs.ErrNotExist) de qualquer outra
+// falha real de origem.
+type fakeSourceOpenErr struct {
+	openErr error
+}
+
+func (f *fakeSourceOpenErr) EnsureConnected() error { return nil }
+func (f *fakeSourceOpenErr) List(string) ([]source.FileInfo, error) {
+	return []source.FileInfo{{Name: "pb007543.png", Size: 2000, ModTime: time.Now()}}, nil
+}
+func (f *fakeSourceOpenErr) Open(string, string) (io.ReadCloser, error) {
+	return nil, f.openErr
+}
+func (f *fakeSourceOpenErr) ModTime(string, string) (time.Time, error) {
+	return time.Time{}, errors.New("nao deve ser chamado (Open falha antes)")
+}
+func (f *fakeSourceOpenErr) Delete(string, string) error {
+	return errors.New("nao deve ser chamado")
+}
+func (f *fakeSourceOpenErr) Close() error { return nil }
+
+// TestRunArquivoSumidoEntreListEOpenNaoGeraErrorFalso exercita a fiação real
+// (Run -> processFile -> o ramo de erro do Open em pipeline.go) com um erro
+// que embrulha fs.ErrNotExist, como o pkg/sftp devolve quando o Sender já
+// confirmou e apagou o remoto antes deste Open alcançar o mesmo nome (corrida
+// provada em produção em 04/10, pb007543.png). Não deve mais virar ERROR.
+func TestRunArquivoSumidoEntreListEOpenNaoGeraErrorFalso(t *testing.T) {
+	backoffOriginal := pollRetryBackoff
+	pollRetryBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { pollRetryBackoff = backoffOriginal })
+
+	src := &fakeSourceOpenErr{openErr: fmt.Errorf("sftp: %w", os.ErrNotExist)}
+
+	buf := &bytes.Buffer{}
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	p := &Pipeline{
+		SFTPFolder:  "pb",
+		TempDir:     t.TempDir(),
+		WaitingTime: 10 * time.Millisecond,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	p.Run(ctx)
+
+	logado := buf.String()
+	if strings.Contains(logado, "level=ERROR") {
+		t.Fatalf("arquivo sumido entre List e Open (já confirmado pelo Sender) não deveria logar ERROR, log: %q", logado)
+	}
+	if !strings.Contains(logado, "level=WARN") || !strings.Contains(logado, "arquivo sumiu da origem") {
+		t.Fatalf("esperava WARN de arquivo sumido da origem, log: %q", logado)
+	}
+	if _, aindaEmVoo := p.inFlight.Load("pb007543.png"); aindaEmVoo {
+		t.Errorf("inFlight não deveria reter o arquivo após falha de Open")
+	}
+}
+
+// TestRunOpenComErroRealContinuaLogandoERROR e' o caso de controle da anterior:
+// uma falha de origem que NÃO é fs.ErrNotExist (ex.: conexão caiu) tem que
+// continuar gerando ERROR — a mudança não pode mascarar falha real.
+func TestRunOpenComErroRealContinuaLogandoERROR(t *testing.T) {
+	backoffOriginal := pollRetryBackoff
+	pollRetryBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { pollRetryBackoff = backoffOriginal })
+
+	src := &fakeSourceOpenErr{openErr: errors.New("connection lost")}
+
+	buf := &bytes.Buffer{}
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	p := &Pipeline{
+		SFTPFolder:  "pb",
+		TempDir:     t.TempDir(),
+		WaitingTime: 10 * time.Millisecond,
+		Src:         src,
+		Sender:      discord.NewSender(nil, 1),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	p.Run(ctx)
+
+	logado := buf.String()
+	if !strings.Contains(logado, "level=ERROR") || !strings.Contains(logado, "não foi possível abrir arquivo remoto") {
+		t.Fatalf("falha real de origem (não fs.ErrNotExist) deveria continuar gerando ERROR, log: %q", logado)
+	}
+	if strings.Contains(logado, "arquivo sumiu da origem") {
+		t.Fatalf("falha real de origem não deveria ser classificada como arquivo sumido, log: %q", logado)
 	}
 }
 
