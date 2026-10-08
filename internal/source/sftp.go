@@ -20,6 +20,13 @@ import (
 // fixos, o caso "conexao meio-aberta" seria intestavel em tempo de suite.
 var sftpProbeTimeout = 10 * time.Second
 
+// sftpHandshakeTimeout cobre o handshake SSH e o init do sFTP, que
+// ssh.ClientConfig.Timeout NAO cobre (esse so' vale pro dial TCP). Sem este
+// prazo, um peer que aceita o TCP e fica mudo prende EnsureConnected para
+// sempre, segurando s.mu e travando Close() junto. Var de pacote pelo mesmo
+// motivo do probe acima: precisa encurtar em teste.
+var sftpHandshakeTimeout = 15 * time.Second
+
 // errSFTPNotConnected e' devolvido quando um metodo de dados e' chamado com
 // s.client nil. Isso acontece quando EnsureConnected falhou (closeLocked()
 // zerou o client e o ssh.Dial seguinte tambem falhou): o poller dorme e tenta
@@ -147,14 +154,33 @@ func (s *SFTPSource) EnsureConnected() error {
 		s.closeLocked()
 	}
 
-	sshCli, err := ssh.Dial("tcp", s.addr, s.config)
+	conn, err := net.DialTimeout("tcp", s.addr, s.config.Timeout)
 	if err != nil {
 		return fmt.Errorf("falha ao conectar via SSH em %s: %w", s.addr, err)
 	}
+	// Deadline cobrindo handshake SSH + init do sFTP: nenhum dos dois tem
+	// prazo proprio (ssh.NewClientConn roda sem deadline, e sftp.NewClient
+	// depende dele ja estabelecido). Zerado no fim, antes de guardar a
+	// conexao, para o prazo nao continuar valendo no data path.
+	if err := conn.SetDeadline(time.Now().Add(sftpHandshakeTimeout)); err != nil {
+		conn.Close()
+		return fmt.Errorf("falha ao definir prazo de handshake para %s: %w", s.addr, err)
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, s.addr, s.config)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("falha ao conectar via SSH em %s: %w", s.addr, err)
+	}
+	sshCli := ssh.NewClient(c, chans, reqs)
 	client, err := sftp.NewClient(sshCli)
 	if err != nil {
 		sshCli.Close()
 		return fmt.Errorf("falha ao criar cliente sFTP: %w", err)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		client.Close()
+		sshCli.Close()
+		return fmt.Errorf("falha ao zerar prazo de handshake para %s: %w", s.addr, err)
 	}
 	s.sshCli = sshCli
 	s.client = client
