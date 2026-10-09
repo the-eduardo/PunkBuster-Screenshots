@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,4 +188,106 @@ func atenderConexaoSFTP(conn net.Conn, config *ssh.ServerConfig) {
 			}
 		}()
 	}
+}
+
+// TestEnsureConnectedNaoPrendeEmSFTPMudo cobre a metade "init do sFTP" do
+// prazo: o servidor conclui o handshake SSH e aceita a sessao, mas nunca
+// responde ao pedido do subsistema sftp. Sem o deadline cobrindo tambem o
+// sftp.NewClient (ou seja, se o prazo fosse zerado logo apos o handshake SSH),
+// EnsureConnected ficaria pendurado para sempre sob s.mu. Contraprova positiva:
+// TestEnsureConnectedZeraDeadlineAposHandshake mostra que um servidor saudavel
+// conecta normalmente com o mesmo prazo.
+func TestEnsureConnectedNaoPrendeEmSFTPMudo(t *testing.T) {
+	encurtaHandshake(t, 300*time.Millisecond)
+
+	addr, stop := servidorSSHSemSFTP(t)
+	defer stop()
+
+	s, err := NewSFTPSource(addr, "qualquer", "qualquer", "", true)
+	if err != nil {
+		t.Fatalf("NewSFTPSource: %v", err)
+	}
+	s.config.Timeout = 2 * time.Second
+
+	done := make(chan error, 1)
+	go func() { done <- s.EnsureConnected() }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("EnsureConnected deveria falhar quando o subsistema sftp nunca responde, veio nil")
+		}
+		if !strings.Contains(err.Error(), "sFTP") {
+			t.Fatalf("esperava falha no init do sFTP (nao no handshake SSH), veio: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("EnsureConnected ficou preso no init do sFTP (deadline nao cobre sftp.NewClient)")
+	}
+
+	closeDone := make(chan struct{})
+	go func() { s.Close(); close(closeDone) }()
+	select {
+	case <-closeDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Close() ficou presa - EnsureConnected nao soltou s.mu")
+	}
+}
+
+// servidorSSHSemSFTP sobe um servidor SSH real que autentica e aceita canais
+// de sessao, mas engole todos os requests (inclusive o subsistema sftp) sem
+// nunca responder.
+func servidorSSHSemSFTP(t *testing.T) (string, func()) {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	signer, err := ssh.NewSignerFromSigner(priv)
+	if err != nil {
+		t.Fatalf("ssh.NewSignerFromSigner: %v", err)
+	}
+	config := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			return nil, nil
+		},
+	}
+	config.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				sconn, chans, reqs, err := ssh.NewServerConn(conn, config)
+				if err != nil {
+					conn.Close()
+					return
+				}
+				defer sconn.Close()
+				go ssh.DiscardRequests(reqs)
+				for newChannel := range chans {
+					channel, requests, err := newChannel.Accept()
+					if err != nil {
+						continue
+					}
+					_ = channel
+					// Engole sem responder: o WantReply do subsistema fica pendente.
+					go func() {
+						for range requests {
+						}
+					}()
+				}
+			}()
+		}
+	}()
+
+	return ln.Addr().String(), func() { ln.Close() }
 }
