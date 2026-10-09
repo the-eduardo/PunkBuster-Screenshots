@@ -10,8 +10,10 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -195,6 +197,13 @@ func (p *Pipeline) processFile(f source.FileInfo) bool {
 
 	remote, err := p.Src.Open(p.SFTPFolder, f.Name)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Lista velha: o Sender confirmou e apagou o remoto entre o List() e este
+			// Open (onSendResult libera o inFlight só depois do Delete). Não é falha
+			// da origem — o próximo List() já não traz o arquivo.
+			slog.Warn("arquivo sumiu da origem entre o List e o Open, provavelmente já enviado", "arquivo", f.Name)
+			return false
+		}
 		slog.Error("não foi possível abrir arquivo remoto", "arquivo", f.Name, "erro", err)
 		return false
 	}
