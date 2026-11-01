@@ -226,5 +226,10 @@ func (s *Sender) send(job SendJob) (*discordgo.Message, error) {
 		Files: []*discordgo.File{
 			{Name: job.FileName, Reader: f},
 		},
+		// PlayerName vem cru do header do arquivo (pbheader.go:153), sem filtro
+		// de caracteres — um nome "@everyone"/"<@id>" seria interpretado como
+		// menção real pelo Discord. Parse vazio bloqueia toda interpretação de
+		// menção sem tirar o nome do texto.
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	})
 }
