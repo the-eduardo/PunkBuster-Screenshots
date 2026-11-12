@@ -93,6 +93,26 @@ func NewHandler(store *storage.Store) *Handler {
 // Content — o clampContent segura o estouro, isto aqui corta na origem.
 const termoMaxLength = 100
 
+// lastDefaultQty e lastMaxQty governam a option "quantidade" do /pbss last. A
+// option é registrada SEM MinValue/MaxValue (o Discord não aparou nada), então
+// quem apara é handleCommand — e os dois valores alimentam também a descrição
+// exibida ao usuário, pra que a promessa e o clamp nunca divirjam: foi
+// exatamente essa divergência que fez pedir 50 devolver 5 em vez de 20.
+// Mexer em qualquer um dos dois muda o texto registrado no Discord; o Register
+// é upsert só do /pbss em todo boot, então propaga sozinho (nunca bulk
+// overwrite — o app é compartilhado com o bf4db-bot).
+const (
+	lastDefaultQty = 5
+	lastMaxQty     = 20
+)
+
+// lastQtyDescription é a descrição da option "quantidade", derivada das
+// constantes acima. TestPbssCommandDescricaoDaQuantidade crava o texto exato
+// pra uma mudança acidental não re-registrar o comando em silêncio.
+func lastQtyDescription() string {
+	return fmt.Sprintf("Quantos mostrar (padrão %d, máx %d)", lastDefaultQty, lastMaxQty)
+}
+
 // pbssCommand monta a definição do /pbss. Separada do Register pra suíte
 // inspecionar a struct sem rede.
 func pbssCommand() *discordgo.ApplicationCommand {
@@ -114,7 +134,7 @@ func pbssCommand() *discordgo.ApplicationCommand {
 				Description: "Mostra os últimos screenshots de um jogador, sem paginação",
 				Options: []*discordgo.ApplicationCommandOption{
 					{Type: discordgo.ApplicationCommandOptionString, Name: "termo", Description: "Nome do jogador ou GUID", Required: true, MaxLength: termoMaxLength},
-					{Type: discordgo.ApplicationCommandOptionInteger, Name: "quantidade", Description: "Quantos mostrar (padrão 5, máx 20)", Required: false},
+					{Type: discordgo.ApplicationCommandOptionInteger, Name: "quantidade", Description: lastQtyDescription(), Required: false},
 				},
 			},
 			{
@@ -189,12 +209,20 @@ func (h *Handler) handleCommand(s *discordgo.Session, i *discordgo.InteractionCr
 	case "search":
 		h.runSearch(s, i, sub.Options[0].StringValue())
 	case "last":
-		qty := 5
+		qty := lastDefaultQty
 		if len(sub.Options) > 1 {
 			qty = int(sub.Options[1].IntValue())
 		}
-		if qty <= 0 || qty > 20 {
-			qty = 5
+		// Os dois casos são SEPARADOS de propósito. Juntos num só ramo
+		// (`qty <= 0 || qty > 20 { qty = 5 }`), pedir acima do teto entregava
+		// 5 — menos que o próprio default — justamente o oposto do que a
+		// descrição da option promete. Valor ausente ou inválido cai no
+		// default; valor alto demais é aparado no máximo.
+		if qty <= 0 {
+			qty = lastDefaultQty
+		}
+		if qty > lastMaxQty {
+			qty = lastMaxQty
 		}
 		h.runLast(s, i, sub.Options[0].StringValue(), qty)
 	case "stats":
