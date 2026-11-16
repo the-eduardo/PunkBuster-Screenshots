@@ -199,6 +199,34 @@ func (h *Handler) HandleInteraction(s *discordgo.Session, i *discordgo.Interacti
 	}
 }
 
+// optionByName acha a option pelo NOME. O Discord entrega as options do
+// subcomando na ordem em que o usuário as preencheu, não na ordem em que
+// pbssCommand() as declara (discordgo #1126): ler sub.Options[0] como "termo"
+// funciona só enquanto o usuário preenche de cima pra baixo. Quem escolhesse
+// "quantidade" antes de "termo" no /pbss last recebia uma option Integer em
+// Options[0], StringValue() panicava, o recover de HandleInteraction
+// respondia o erro genérico e um comando válido falhava. Devolve nil quando a
+// option não veio — cada chamador decide o default.
+func optionByName(opts []*discordgo.ApplicationCommandInteractionDataOption, name string) *discordgo.ApplicationCommandInteractionDataOption {
+	for _, o := range opts {
+		if o != nil && o.Name == name {
+			return o
+		}
+	}
+	return nil
+}
+
+// optionString devolve o valor de uma option de texto, ou "" se ela não veio.
+// O termo vazio não é caso real (a option é Required), mas devolver string em
+// vez de panicar mantém o caminho defensivo: lookup já trata termo em branco
+// como busca sem resultado.
+func optionString(opts []*discordgo.ApplicationCommandInteractionDataOption, name string) string {
+	if o := optionByName(opts, name); o != nil {
+		return o.StringValue()
+	}
+	return ""
+}
+
 func (h *Handler) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
 	if data.Name != "pbss" || len(data.Options) == 0 {
@@ -207,11 +235,11 @@ func (h *Handler) handleCommand(s *discordgo.Session, i *discordgo.InteractionCr
 	sub := data.Options[0]
 	switch sub.Name {
 	case "search":
-		h.runSearch(s, i, sub.Options[0].StringValue())
+		h.runSearch(s, i, optionString(sub.Options, "termo"))
 	case "last":
 		qty := lastDefaultQty
-		if len(sub.Options) > 1 {
-			qty = int(sub.Options[1].IntValue())
+		if o := optionByName(sub.Options, "quantidade"); o != nil {
+			qty = int(o.IntValue())
 		}
 		// Os dois casos são SEPARADOS de propósito. Juntos num só ramo
 		// (`qty <= 0 || qty > 20 { qty = 5 }`), pedir acima do teto entregava
@@ -224,7 +252,7 @@ func (h *Handler) handleCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		if qty > lastMaxQty {
 			qty = lastMaxQty
 		}
-		h.runLast(s, i, sub.Options[0].StringValue(), qty)
+		h.runLast(s, i, optionString(sub.Options, "termo"), qty)
 	case "stats":
 		h.runStats(s, i)
 	}
