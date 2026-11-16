@@ -31,7 +31,7 @@ func pubDe(t *testing.T, linha string) ssh.PublicKey {
 
 func TestParseHostKey_AceitaOsDoisFormatos(t *testing.T) {
 	casos := map[string]string{
-		"so a chave":          chaveServidor,
+		"so a chave":           chaveServidor,
 		"linha do ssh-keyscan": linhaKeyscan,
 		"com espaco em volta":  "  " + linhaKeyscan + "  ",
 	}
@@ -60,7 +60,7 @@ func TestParseHostKey_RejeitaLixo(t *testing.T) {
 
 // O ponto central da mudanca: sem chave e sem opt-out explicito, o bot nao sobe.
 func TestHostKeyCallback_SemChaveFalhaFechado(t *testing.T) {
-	_, err := hostKeyCallback("", false)
+	_, _, err := hostKeyCallback("", false)
 	if err == nil {
 		t.Fatal("sem SFTP_HOST_KEY e sem opt-out, deveria falhar")
 	}
@@ -70,27 +70,55 @@ func TestHostKeyCallback_SemChaveFalhaFechado(t *testing.T) {
 }
 
 func TestHostKeyCallback_OptOutExplicitoPassa(t *testing.T) {
-	cb, err := hostKeyCallback("", true)
+	cb, algos, err := hostKeyCallback("", true)
 	if err != nil {
 		t.Fatalf("opt-out explicito nao deveria falhar: %v", err)
 	}
 	if cb(":2025", &net.TCPAddr{}, pubDe(t, chaveIntrusa)) != nil {
 		t.Error("com opt-out, qualquer chave deveria ser aceita")
 	}
+	// Sem chave esperada nao ha tipo a fixar: a negociacao segue o padrao.
+	if algos != nil {
+		t.Errorf("no modo inseguro nao deveria restringir algoritmos, veio %v", algos)
+	}
 }
 
 func TestHostKeyCallback_AceitaChaveCerta(t *testing.T) {
-	cb, err := hostKeyCallback(linhaKeyscan, false)
+	cb, algos, err := hostKeyCallback(linhaKeyscan, false)
 	if err != nil {
 		t.Fatalf("nao devia falhar: %v", err)
 	}
 	if err := cb("pedro.fragify.net:2025", &net.TCPAddr{}, pubDe(t, chaveServidor)); err != nil {
 		t.Errorf("a chave correta deveria passar, veio: %v", err)
 	}
+	// A chave fixada e' ed25519: a negociacao tem que pedir esse tipo, senao o
+	// servidor manda outro e a conexao morre acusando chave trocada.
+	if len(algos) != 1 || algos[0] != ssh.KeyAlgoED25519 {
+		t.Errorf("algoritmos negociados = %v, esperava apenas %s", algos, ssh.KeyAlgoED25519)
+	}
+}
+
+// TestHostKeyAlgos_RSAOfereceSHA2 cobre o unico tipo em que a lista nao e' o
+// tipo da chave sozinho: a chave e' "ssh-rsa", mas oferecer so' isso forcaria
+// assinatura SHA-1, recusada por sshd moderno.
+func TestHostKeyAlgos_RSAOfereceSHA2(t *testing.T) {
+	algos := hostKeyAlgos(ssh.KeyAlgoRSA)
+	esperado := []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	if len(algos) != len(esperado) {
+		t.Fatalf("algoritmos para chave rsa = %v, esperava %v", algos, esperado)
+	}
+	for i := range esperado {
+		if algos[i] != esperado[i] {
+			t.Fatalf("algoritmos para chave rsa = %v, esperava %v (ordem importa)", algos, esperado)
+		}
+	}
+	if got := hostKeyAlgos(ssh.KeyAlgoECDSA256); len(got) != 1 || got[0] != ssh.KeyAlgoECDSA256 {
+		t.Errorf("para os demais tipos a lista e' o proprio tipo, veio %v", got)
+	}
 }
 
 func TestHostKeyCallback_RejeitaChaveTrocadaEMostraAsDuasFingerprints(t *testing.T) {
-	cb, err := hostKeyCallback(chaveServidor, false)
+	cb, _, err := hostKeyCallback(chaveServidor, false)
 	if err != nil {
 		t.Fatalf("nao devia falhar: %v", err)
 	}

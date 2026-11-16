@@ -51,7 +51,7 @@ type SFTPSource struct {
 // que a ausencia de verificacao seja sempre uma escolha declarada e nunca o
 // comportamento padrao.
 func NewSFTPSource(addr, user, password, hostKey string, insecureHostKey bool) (*SFTPSource, error) {
-	callback, err := hostKeyCallback(hostKey, insecureHostKey)
+	callback, algos, err := hostKeyCallback(hostKey, insecureHostKey)
 	if err != nil {
 		return nil, err
 	}
@@ -60,21 +60,32 @@ func NewSFTPSource(addr, user, password, hostKey string, insecureHostKey bool) (
 		config: &ssh.ClientConfig{
 			User:            user,
 			Auth:            []ssh.AuthMethod{ssh.Password(password)},
-			HostKeyCallback: callback,
 			Timeout:         15 * time.Second,
+			HostKeyCallback: callback,
+			// Sem esta lista, quem escolhe o tipo da host key e' a ordem padrao
+			// do x/crypto (ECDSA antes de ED25519), e nao o que o operador
+			// fixou. Contra um sshd comum, que oferece rsa+ecdsa+ed25519, o
+			// servidor mandaria a ecdsa enquanto o .env tem a ed25519 que o
+			// README manda coletar - o callback abaixo veria chave diferente da
+			// esperada e abortaria acusando man-in-the-middle, num servidor
+			// legitimo. Ver hostKeyAlgos.
+			HostKeyAlgorithms: algos,
 		},
 	}, nil
 }
 
-// hostKeyCallback decide como a identidade do servidor e' verificada.
-func hostKeyCallback(hostKey string, insecure bool) (ssh.HostKeyCallback, error) {
+// hostKeyCallback decide como a identidade do servidor e' verificada e, junto,
+// quais algoritmos de host key o cliente aceita negociar (nil = ordem padrao
+// do x/crypto, usada so' quando nao ha chave fixada).
+func hostKeyCallback(hostKey string, insecure bool) (ssh.HostKeyCallback, []string, error) {
 	if strings.TrimSpace(hostKey) == "" {
 		if insecure {
 			// Escolha explicita do operador: aceita qualquer chave. A senha do
-			// sFTP fica exposta a quem conseguir se passar pelo servidor.
-			return ssh.InsecureIgnoreHostKey(), nil
+			// sFTP fica exposta a quem conseguir se passar pelo servidor. Sem
+			// chave esperada nao ha tipo a fixar: vale a ordem padrao.
+			return ssh.InsecureIgnoreHostKey(), nil, nil
 		}
-		return nil, errors.New(
+		return nil, nil, errors.New(
 			"SFTP_HOST_KEY nao definida: sem ela a conexao aceitaria qualquer servidor e a senha " +
 				"ficaria exposta a um ataque man-in-the-middle. Pegue a chave com " +
 				"`ssh-keyscan -p <porta> -t ed25519 <host>` e coloque no .env; " +
@@ -83,11 +94,11 @@ func hostKeyCallback(hostKey string, insecure bool) (ssh.HostKeyCallback, error)
 
 	expected, err := parseHostKey(hostKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	expectedRaw := expected.Marshal()
 
-	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
+	callback := func(hostname string, _ net.Addr, key ssh.PublicKey) error {
 		if bytes.Equal(key.Marshal(), expectedRaw) {
 			return nil
 		}
@@ -97,7 +108,24 @@ func hostKeyCallback(hostKey string, insecure bool) (ssh.HostKeyCallback, error)
 			"chave do host %s nao confere - conexao abortada; esperada %s, recebida %s "+
 				"(troca legitima de chave do servidor ou man-in-the-middle)",
 			hostname, ssh.FingerprintSHA256(expected), ssh.FingerprintSHA256(key))
-	}, nil
+	}
+	return callback, hostKeyAlgos(expected.Type()), nil
+}
+
+// hostKeyAlgos traduz o TIPO da chave fixada na lista de algoritmos que o
+// cliente oferece no handshake. E' so' a negociacao: a verificacao continua
+// byte a byte no callback, entao restringir aqui nao afrouxa nada - um
+// servidor que mande outra chave do mesmo tipo segue sendo recusado.
+//
+// O caso do RSA e' especial: a chave e' sempre do tipo "ssh-rsa", mas a
+// assinatura pode usar SHA-2 (rsa-sha2-256/512). Oferecer so' "ssh-rsa"
+// forcaria SHA-1, que sshd moderno recusa por padrao - por isso os tres, com
+// os mais fortes na frente.
+func hostKeyAlgos(keyType string) []string {
+	if keyType == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	}
+	return []string{keyType}
 }
 
 // parseHostKey aceita tanto "ssh-ed25519 AAAA..." quanto a linha inteira que o
