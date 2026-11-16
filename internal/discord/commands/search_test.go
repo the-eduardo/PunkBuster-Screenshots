@@ -206,9 +206,15 @@ func TestRunSearchLogaFalhaDaInteracao(t *testing.T) {
 }
 
 // TestHandleInteractionRecuperaDePanicNoHandler prova que um panic dentro da
-// árvore de handlers (aqui, indexação sub.Options[0] em handleCommand com um
-// payload malformado — sem a opção obrigatória "termo") não mata o processo:
-// HandleInteraction recupera, loga com stack e responde de forma best-effort.
+// árvore de handlers não mata o processo: HandleInteraction recupera, loga com
+// stack e responde de forma best-effort.
+//
+// O gatilho do panic mudou em 16/11/2026, junto com a leitura das options por
+// nome: antes era a indexação sub.Options[0] num payload sem a option "termo",
+// que agora devolve string vazia em vez de panicar. O payload usado aqui é
+// outro malformado — option declarada como String carregando um número —, que
+// faz StringValue() panicar na asserção de tipo lá dentro do discordgo. O
+// ponto do teste é o mesmo: panic em handler é contido, não derruba o bot.
 // Mutação: remover o defer/recover de HandleInteraction faz o panic subir e
 // abortar o binário de teste (pacote inteiro fica FAIL). Segunda mutação:
 // trocar o corpo do recover por "_ = recover()" faz este teste falhar na
@@ -233,17 +239,20 @@ func TestHandleInteractionRecuperaDePanicNoHandler(t *testing.T) {
 		Data: discordgo.ApplicationCommandInteractionData{
 			Name: "pbss",
 			Options: []*discordgo.ApplicationCommandInteractionDataOption{
-				{Name: "search", Options: nil}, // sem a opcao obrigatoria "termo"
+				{Name: "search", Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					// Payload malformado: Type diz String, Value e' numerico.
+					{Name: "termo", Type: discordgo.ApplicationCommandOptionString, Value: float64(42)},
+				}},
 			},
 		},
 	}}
 
-	h.HandleInteraction(session, i) // sem o fix, sub.Options[0] em handleCommand panica aqui
+	h.HandleInteraction(session, i) // StringValue() panica na assercao de tipo
 
 	if !strings.Contains(logBuf.String(), "panic no handler de interacao") {
 		t.Fatalf("esperava log de panic recuperado, log veio: %q", logBuf.String())
 	}
-	if !strings.Contains(logBuf.String(), "index out of range") {
+	if !strings.Contains(logBuf.String(), "interface conversion") {
 		t.Fatalf("esperava o valor original do panic preservado no log, log veio: %q", logBuf.String())
 	}
 }
